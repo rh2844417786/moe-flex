@@ -455,20 +455,24 @@ class FluxMoERegistry:
         placement_by_id = {
             placement.tensor_id: placement for placement in placements
         }
+        verify_weights = os.environ.get("FLUXMOE_VERIFY_WEIGHTS") == "1"
         expected_layer_hashes: dict[TensorKind, dict[int, str]] = {
             "w13": {},
             "w2": {},
         }
-        for kind in kinds:
-            for layer_idx in range(self.total_layers):
-                digest = sha256()
-                for expert_idx in range(self.num_experts):
-                    digest.update(
-                        _tensor_bytes(
-                            raw_tensors[_tensor_id(layer_idx, expert_idx, kind)]
+        if verify_weights:
+            for kind in kinds:
+                for layer_idx in range(self.total_layers):
+                    digest = sha256()
+                    for expert_idx in range(self.num_experts):
+                        digest.update(
+                            _tensor_bytes(
+                                raw_tensors[
+                                    _tensor_id(layer_idx, expert_idx, kind)
+                                ]
+                            )
                         )
-                    )
-                expected_layer_hashes[kind][layer_idx] = digest.hexdigest()
+                    expected_layer_hashes[kind][layer_idx] = digest.hexdigest()
         gpu_inputs = {
             tensor_id: encode_bf16_bits(
                 _tensor_bytes(tensor),
@@ -517,7 +521,7 @@ class FluxMoERegistry:
                 pool=self._pools[kind],
                 hierarchy=hierarchy,
                 expected_layer_hashes=expected_layer_hashes[kind],
-                verify_weights=os.environ.get("FLUXMOE_VERIFY_WEIGHTS") == "1",
+                verify_weights=verify_weights,
             )
             self._materializers[kind] = materializer
             materializers[kind] = materializer
