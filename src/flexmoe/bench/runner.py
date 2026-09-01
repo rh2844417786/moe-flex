@@ -316,6 +316,34 @@ def compare_reference(
     return output_tokens_match, router_topk_match, stressed_delta
 
 
+def validate_resident_oom(
+    config: RunConfig, failure_run: Path, git_sha: str
+) -> Path:
+    failure_path = failure_run.resolve()
+    failure = json.loads((failure_path / "error.json").read_text(encoding="utf-8"))
+    failure_config = json.loads(
+        (failure_path / "config.json").read_text(encoding="utf-8")
+    )
+    if not isinstance(failure, dict) or not isinstance(failure_config, dict):
+        raise TypeError("resident failure artifacts must be JSON objects")
+    failure_message = str(failure.get("message", "")).lower()
+    if "out of memory" not in failure_message and "oom" not in failure_message:
+        raise ValueError("resident failure is not an OOM/capacity result")
+    for field_name, expected in {
+        "git_sha": git_sha,
+        "variant": "resident",
+        "model_path": str(config.model_path),
+        "dataset_sha256": config.dataset_sha256,
+        "batch_size": config.batch_size,
+        "context_length": config.context_length,
+        "output_length": config.output_length,
+        "tensor_parallel_size": config.tensor_parallel_size,
+    }.items():
+        if failure_config.get(field_name) != expected:
+            raise ValueError(f"resident OOM differs in {field_name}")
+    return failure_path
+
+
 def _configure_environment(config: RunConfig) -> None:
     values = variant_environment(config.variant)
     values.update(
@@ -405,12 +433,19 @@ def run_benchmark(
     reference_run: Path | None = None,
     correctness_mode: bool = False,
     correctness_evidence: Path | None = None,
+    resident_failure_run: Path | None = None,
+    result_path_file: Path | None = None,
 ) -> Path:
     if config.variant not in _IMPLEMENTED_VARIANTS:
         raise UnsupportedModeError(
             f"benchmark variant {config.variant} is a declared DEV_ONLY contract"
         )
     git_sha = _git_sha(project_root)
+    validated_resident_failure = (
+        validate_resident_oom(config, resident_failure_run, git_sha)
+        if resident_failure_run is not None
+        else None
+    )
     preflight_source = runs_root / f"preflight-{git_sha}.json"
     if not preflight_source.is_file():
         raise FileNotFoundError(
@@ -420,6 +455,9 @@ def run_benchmark(
     if not isinstance(preflight_payload, dict) or preflight_payload.get("ok") is not True:
         raise RuntimeError(f"preflight did not pass: {preflight_source}")
     run_dir = create_run_directory(runs_root, git_sha)
+    if result_path_file is not None:
+        result_path_file.parent.mkdir(parents=True, exist_ok=True)
+        result_path_file.write_text(str(run_dir.resolve()) + "\n", encoding="utf-8")
     (run_dir / "preflight.json").write_text(
         json.dumps(preflight_payload, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -530,6 +568,13 @@ def run_benchmark(
             metrics["correctness_evidence"] = str(evidence_path)
             router_topk_match = True
             weights_bit_exact = True
+            if resident_failure_run is not None:
+                output_tokens_match = True
+        delayed_oom = False
+        if validated_resident_failure is not None:
+            delayed_oom = True
+            metrics["resident_failure_run"] = str(validated_resident_failure)
+            metrics["delayed_oom"] = True
         correctness = {
             "output_tokens_match": output_tokens_match,
             "router_topk_match": router_topk_match,
@@ -556,7 +601,7 @@ def run_benchmark(
         if config.variant == "resident":
             state_status = "BASELINE_COMPLETE"
         elif (
-            reference_run is not None
+            (reference_run is not None or delayed_oom)
             and output_tokens_match
             and router_topk_match
             and weights_bit_exact
@@ -580,6 +625,10 @@ def run_benchmark(
             run_dir / "error.json",
             {"type": type(error).__name__, "message": str(error)},
         )
+        _write_json(
+            run_dir / "state.json",
+            {"status": "FAILED", "git_sha": git_sha},
+        )
         raise
     finally:
         telemetry.close()
@@ -596,6 +645,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--reference-run", type=Path)
     parser.add_argument("--correctness-mode", action="store_true")
     parser.add_argument("--correctness-evidence", type=Path)
+    parser.add_argument("--resident-failure-run", type=Path)
     parser.add_argument("--result-path-file", type=Path)
     arguments = parser.parse_args(argv)
     config = load_run_config(arguments.config)
@@ -618,12 +668,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             if arguments.correctness_evidence is not None
             else None
         ),
+        resident_failure_run=(
+            arguments.resident_failure_run.resolve()
+            if arguments.resident_failure_run is not None
+            else None
+        ),
+        result_path_file=arguments.result_path_file,
     )
-    if arguments.result_path_file is not None:
-        arguments.result_path_file.parent.mkdir(parents=True, exist_ok=True)
-        arguments.result_path_file.write_text(
-            str(run_dir.resolve()) + "\n", encoding="utf-8"
-        )
     print(run_dir)
     return 0
 
@@ -639,5 +690,6 @@ __all__ = [
     "create_run_directory",
     "load_run_config",
     "run_benchmark",
+    "validate_resident_oom",
     "variant_environment",
 ]

@@ -198,26 +198,37 @@ def validate_run_directory(run_dir: Path) -> RunEvidence:
                 raise ValueError(f"router trace line count mismatch: {trace_path}")
 
     reference_value = metrics.get("reference_run")
-    if not isinstance(reference_value, str):
-        raise TypeError("validated FluxMoE run has no resident reference")
-    reference_metrics = _json_object(Path(reference_value) / "metrics.json")
-    current_repetitions = cast(list[object], raw_repetitions)
-    reference_repetitions = reference_metrics.get("repetitions")
-    if not isinstance(reference_repetitions, list):
-        raise TypeError("resident reference repetitions must be a list")
+    failure_value = metrics.get("resident_failure_run")
+    if isinstance(reference_value, str):
+        reference_metrics = _json_object(Path(reference_value) / "metrics.json")
+        current_repetitions = cast(list[object], raw_repetitions)
+        reference_repetitions = reference_metrics.get("repetitions")
+        if not isinstance(reference_repetitions, list):
+            raise TypeError("resident reference repetitions must be a list")
 
-    def output_tokens(repetitions: list[object]) -> list[object]:
-        tokens: list[object] = []
-        for repetition in repetitions:
-            if not isinstance(repetition, dict):
-                raise TypeError("repetition metrics must be objects")
-            tokens.append(repetition.get("output_token_ids"))
-        return tokens
+        def output_tokens(repetitions: list[object]) -> list[object]:
+            tokens: list[object] = []
+            for repetition in repetitions:
+                if not isinstance(repetition, dict):
+                    raise TypeError("repetition metrics must be objects")
+                tokens.append(repetition.get("output_token_ids"))
+            return tokens
 
-    if output_tokens(current_repetitions) != output_tokens(reference_repetitions):
-        raise ValueError("greedy output token IDs differ from resident reference")
-    if not delegated and reference_metrics.get("router_trace") != raw_router:
-        raise ValueError("router Top-k trace differs from resident reference")
+        if output_tokens(current_repetitions) != output_tokens(
+            reference_repetitions
+        ):
+            raise ValueError("greedy output token IDs differ from resident reference")
+        if not delegated and reference_metrics.get("router_trace") != raw_router:
+            raise ValueError("router Top-k trace differs from resident reference")
+    elif isinstance(failure_value, str):
+        failure = _json_object(Path(failure_value) / "error.json")
+        message = str(failure.get("message", "")).lower()
+        if "out of memory" not in message and "oom" not in message:
+            raise ValueError("resident failure evidence is not an OOM")
+        if metrics.get("delayed_oom") is not True or not delegated:
+            raise ValueError("delayed OOM requires delegated correctness evidence")
+    else:
+        raise TypeError("validated FluxMoE run has no resident reference or OOM")
     classification = classify_support(evidence, stressed_delta=0.0)
     if classification.status == "INCONCLUSIVE":
         raise ValueError(

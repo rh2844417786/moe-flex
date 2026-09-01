@@ -22,15 +22,23 @@ for point in "${points[@]}"; do
   read -r batch context <<< "${point}"
   resident_pointer="${pointer_root}/resident-${batch}-${context}.txt"
   flux_pointer="${pointer_root}/fluxmoe-fixed-${batch}-${context}.txt"
-  "${project_root}/scripts/server/run_container.sh" \
-    python3 -m flexmoe.bench.runner \
-    --config benchmarks/configs/resident.yaml \
-    --project-root "${project_root}" \
-    --runs-root "${project_root}/runs" \
-    --batch-size "${batch}" \
-    --context-length "${context}" \
-    --result-path-file "${resident_pointer}"
+  resident_succeeded=0
+  if "${project_root}/scripts/server/run_container.sh" \
+      python3 -m flexmoe.bench.runner \
+      --config benchmarks/configs/resident.yaml \
+      --project-root "${project_root}" \
+      --runs-root "${project_root}/runs" \
+      --batch-size "${batch}" \
+      --context-length "${context}" \
+      --result-path-file "${resident_pointer}"; then
+    resident_succeeded=1
+  fi
   resident_run="$(tr -d '\n' < "${resident_pointer}")"
+  if [[ "${resident_succeeded}" -eq 1 ]]; then
+    comparison_args=(--reference-run "${resident_run}")
+  else
+    comparison_args=(--resident-failure-run "${resident_run}")
+  fi
 
   "${project_root}/scripts/server/run_container.sh" \
     python3 -m flexmoe.bench.runner \
@@ -39,7 +47,7 @@ for point in "${points[@]}"; do
     --runs-root "${project_root}/runs" \
     --batch-size "${batch}" \
     --context-length "${context}" \
-    --reference-run "${resident_run}" \
+    "${comparison_args[@]}" \
     --correctness-evidence "${correctness_run}" \
     --result-path-file "${flux_pointer}"
   flux_run="$(tr -d '\n' < "${flux_pointer}")"
