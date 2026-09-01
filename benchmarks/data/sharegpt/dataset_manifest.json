@@ -1,0 +1,25 @@
+{
+  "accepted_rows": 58659,
+  "counts_by_context": {
+    "1024": 256,
+    "2048": 256,
+    "3072": 256,
+    "4096": 256
+  },
+  "packing_policy": "shuffle-pack-eos-truncate",
+  "record_count": 1024,
+  "sampling_seed": 20260901,
+  "schema_version": 1,
+  "sha256": "ae5e2428733c21f39efdd1c6ba45d9dac78e4f00d43a0a930151034eda178445",
+  "skipped_by_reason": {
+    "empty_or_bad_list": 550,
+    "empty_value": 213,
+    "non_alternating": 74,
+    "starts_non_human": 34417,
+    "unsupported_role": 232
+  },
+  "source_manifest_sha256": "3627de7e10c19f376af31eb4112bfe30e079bb67973c716d91f0ddf5257a1ba1",
+  "source_rows": 94145,
+  "source_sha256": "35f0e213ce091ed9b9af2a1f0755e9d39f9ccec34ab281cd4ca60d70f6479ba4",
+  "tokenizer_revision": "9c7f2fbe84465e40164a94cc16cd30b6999b0cc7"
+}

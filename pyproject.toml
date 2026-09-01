@@ -11,10 +11,11 @@ requires-python = ">=3.10,<3.14"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 dependencies = [
-  "huggingface-hub>=0.27,<2",
-  "numpy>=1.26,<3",
+  "huggingface-hub==0.34.3",
+  "numpy==1.26.4",
   "pyyaml>=6.0,<7",
   "torch==2.8.0",
+  "transformers==4.55.2",
   "zstandard>=0.23,<1",
 ]
 

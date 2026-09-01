@@ -1,0 +1,16 @@
+[
+  {
+    "id": "mini-0",
+    "conversations": [
+      {"from": "human", "value": "Explain sparse experts briefly."},
+      {"from": "gpt", "value": "Only selected experts process each token."}
+    ]
+  },
+  {
+    "id": "mini-1",
+    "conversations": [
+      {"from": "human", "value": "Why does KV cache consume memory?"},
+      {"from": "gpt", "value": "It stores attention keys and values for prior tokens."}
+    ]
+  }
+]
