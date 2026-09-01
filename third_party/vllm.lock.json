@@ -1,0 +1,6 @@
+{
+  "commit": "01efc7ef781391e744ed08c3292817a773d654e6",
+  "repository": "https://github.com/vllm-project/vllm.git",
+  "tag": "v0.10.2",
+  "torch": "2.8.0"
+}

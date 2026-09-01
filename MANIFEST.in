@@ -1,0 +1,3 @@
+recursive-include csrc *.cpp *.cu *.h
+include third_party/vllm.lock.json
+include docker/Dockerfile

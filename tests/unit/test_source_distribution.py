@@ -1,0 +1,29 @@
+import subprocess
+import sys
+import tarfile
+from pathlib import Path
+
+
+def test_source_distribution_contains_cuda_build_inputs(tmp_path: Path) -> None:
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "build",
+            "--sdist",
+            "--no-isolation",
+            "--outdir",
+            str(tmp_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    archive = next(tmp_path.glob("moe_flex-*.tar.gz"))
+
+    with tarfile.open(archive, "r:gz") as stream:
+        names = stream.getnames()
+
+    assert any(name.endswith("/csrc/bindings.cpp") for name in names)
+    assert any(name.endswith("/third_party/vllm.lock.json") for name in names)
+    assert any(name.endswith("/docker/Dockerfile") for name in names)
