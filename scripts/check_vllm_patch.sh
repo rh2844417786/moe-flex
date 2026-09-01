@@ -15,7 +15,7 @@ trap cleanup EXIT
 git clone --filter=blob:none --no-checkout "${repository}" "${audit_root}/vllm"
 git -C "${audit_root}/vllm" checkout --detach "${commit}"
 test "$(git -C "${audit_root}/vllm" rev-parse HEAD)" = "${commit}"
-git -C "${audit_root}/vllm" apply --check "${patch_file}"
-git -C "${audit_root}/vllm" apply "${patch_file}"
+git -C "${audit_root}/vllm" apply --unidiff-zero --check "${patch_file}"
+git -C "${audit_root}/vllm" apply --unidiff-zero "${patch_file}"
 test "$(git -C "${audit_root}/vllm" diff --name-only)" = \
   "vllm/model_executor/layers/fused_moe/layer.py"

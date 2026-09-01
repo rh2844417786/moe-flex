@@ -214,7 +214,7 @@ class _LayerKindMaterializer(LayerMaterializer):
         device: int,
         pool: _TensorPool,
         hierarchy: StorageHierarchy,
-        expected_hashes: Mapping[str, str],
+        expected_layer_hashes: Mapping[int, str],
         verify_weights: bool,
     ) -> None:
         self._kind = kind
@@ -222,9 +222,9 @@ class _LayerKindMaterializer(LayerMaterializer):
         self._device = device
         self._pool = pool
         self._hierarchy = hierarchy
-        self._expected_hashes = dict(expected_hashes)
+        self._expected_layer_hashes = dict(expected_layer_hashes)
         self._verify_weights = verify_weights
-        self._verified: set[str] = set()
+        self._verified_layers: set[int] = set()
         self._receipts: list[MaterializationReceipt] = []
         self._lock = Lock()
 
@@ -242,23 +242,25 @@ class _LayerKindMaterializer(LayerMaterializer):
         receipts = self._hierarchy.materialize_layer(
             layer_idx, destinations, stream=load_stream
         )
-        verified_ids: list[str] = []
-        if self._verify_weights:
+        verified_layer: int | None = None
+        if self._verify_weights and layer_idx not in self._verified_layers:
             external_stream = torch.cuda.ExternalStream(  # type: ignore[no-untyped-call]
                 load_stream, device=self._device
             )
             external_stream.synchronize()
-            for tensor_id, destination in destinations.items():
-                actual = sha256(_tensor_bytes(destination)).hexdigest()
-                expected = self._expected_hashes[tensor_id]
-                if actual != expected:
-                    raise IntegrityError(
-                        f"materialized BF16 bits differ for {tensor_id}: "
-                        f"expected {expected}, got {actual}"
-                    )
-                verified_ids.append(tensor_id)
+            actual = sha256(
+                _tensor_bytes(self._pool.parameters[layer_idx])
+            ).hexdigest()
+            expected = self._expected_layer_hashes[layer_idx]
+            if actual != expected:
+                raise IntegrityError(
+                    f"materialized BF16 bits differ for layer {layer_idx} "
+                    f"{self._kind}: expected {expected}, got {actual}"
+                )
+            verified_layer = layer_idx
         with self._lock:
-            self._verified.update(verified_ids)
+            if verified_layer is not None:
+                self._verified_layers.add(verified_layer)
             self._receipts.extend(receipts)
 
     def receipts(self) -> tuple[MaterializationReceipt, ...]:
@@ -267,7 +269,7 @@ class _LayerKindMaterializer(LayerMaterializer):
 
     def verification_counts(self) -> tuple[int, int]:
         with self._lock:
-            return len(self._verified), len(self._expected_hashes)
+            return len(self._verified_layers), len(self._expected_layer_hashes)
 
 
 class FluxMoERegistry:
@@ -453,10 +455,20 @@ class FluxMoERegistry:
         placement_by_id = {
             placement.tensor_id: placement for placement in placements
         }
-        expected_hashes = {
-            tensor_id: sha256(_tensor_bytes(tensor)).hexdigest()
-            for tensor_id, tensor in raw_tensors.items()
+        expected_layer_hashes: dict[TensorKind, dict[int, str]] = {
+            "w13": {},
+            "w2": {},
         }
+        for kind in kinds:
+            for layer_idx in range(self.total_layers):
+                digest = sha256()
+                for expert_idx in range(self.num_experts):
+                    digest.update(
+                        _tensor_bytes(
+                            raw_tensors[_tensor_id(layer_idx, expert_idx, kind)]
+                        )
+                    )
+                expected_layer_hashes[kind][layer_idx] = digest.hexdigest()
         gpu_inputs = {
             tensor_id: encode_bf16_bits(
                 _tensor_bytes(tensor),
@@ -504,10 +516,7 @@ class FluxMoERegistry:
                 device=self.device,
                 pool=self._pools[kind],
                 hierarchy=hierarchy,
-                expected_hashes={
-                    tensor_id: expected_hashes[tensor_id]
-                    for tensor_id in kind_ids
-                },
+                expected_layer_hashes=expected_layer_hashes[kind],
                 verify_weights=os.environ.get("FLUXMOE_VERIFY_WEIGHTS") == "1",
             )
             self._materializers[kind] = materializer
@@ -599,6 +608,54 @@ class FluxMoERegistry:
 
 _ACTIVE_REGISTRY: FluxMoERegistry | None = None
 _REGISTRY_LOCK = Lock()
+_ROUTER_TRACE_LOCK = Lock()
+_ROUTER_SEQUENCE = 0
+
+
+def record_router_ids(layer_name: str, topk_ids: torch.Tensor) -> None:
+    """Persist exact routed expert IDs as an ordered, rank-local digest."""
+
+    global _ROUTER_SEQUENCE
+    trace_root = os.environ.get("FLUXMOE_ROUTER_TRACE_DIR")
+    if not trace_root:
+        raise IntegrityError("FLUXMOE_ROUTER_TRACE_DIR is required for tracing")
+    if topk_ids.ndim != 2 or topk_ids.numel() == 0:
+        raise IntegrityError("router Top-k IDs must be a non-empty matrix")
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        rank = torch.distributed.get_rank()
+    else:
+        rank_value = os.environ.get("RANK", "0")
+        try:
+            rank = int(rank_value)
+        except ValueError as error:
+            raise IntegrityError(f"invalid RANK value {rank_value}") from error
+    normalized = (
+        topk_ids.detach().to(device="cpu", dtype=torch.int64).contiguous()
+    )
+    digest = sha256(
+        normalized.numpy().astype("<i8", copy=False).tobytes()
+    ).hexdigest()
+    root = Path(trace_root)
+    root.mkdir(parents=True, exist_ok=True)
+    with _ROUTER_TRACE_LOCK:
+        payload = {
+            "schema_version": 1,
+            "sequence": _ROUTER_SEQUENCE,
+            "rank": rank,
+            "layer_name": layer_name,
+            "shape": list(normalized.shape),
+            "sha256": digest,
+        }
+        _ROUTER_SEQUENCE += 1
+        with (root / f"rank-{rank}.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+            stream.write("\n")
+
+
+def reset_router_trace_state() -> None:
+    global _ROUTER_SEQUENCE
+    with _ROUTER_TRACE_LOCK:
+        _ROUTER_SEQUENCE = 0
 
 
 def install_registry(registry: FluxMoERegistry) -> None:
@@ -774,6 +831,8 @@ __all__ = [
     "install_registry",
     "layer_index",
     "maybe_create_weights",
+    "record_router_ids",
     "require_active_registry",
     "reset_registry",
+    "reset_router_trace_state",
 ]

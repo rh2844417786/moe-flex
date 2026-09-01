@@ -25,5 +25,32 @@ mkdir -p "${smoke_root}"
   compute-sanitizer --error-exitcode=10 --tool racecheck python3 -m pytest tests/cuda/test_stream_lifecycle.py -q -k "not ten_thousand"
 '
 
+resident_pointer="${smoke_root}/resident-run.txt"
+flux_pointer="${smoke_root}/fluxmoe-fixed-run.txt"
+"${project_root}/scripts/server/run_container.sh" \
+  python3 -m flexmoe.bench.runner \
+  --config benchmarks/configs/resident.yaml \
+  --project-root "${project_root}" \
+  --runs-root "${project_root}/runs" \
+  --batch-size 4 \
+  --context-length 1024 \
+  --correctness-mode \
+  --result-path-file "${resident_pointer}"
+resident_run="$(tr -d '\n' < "${resident_pointer}")"
+
+"${project_root}/scripts/server/run_container.sh" \
+  python3 -m flexmoe.bench.runner \
+  --config benchmarks/configs/fluxmoe_fixed.yaml \
+  --project-root "${project_root}" \
+  --runs-root "${project_root}/runs" \
+  --batch-size 4 \
+  --context-length 1024 \
+  --reference-run "${resident_run}" \
+  --correctness-mode \
+  --result-path-file "${flux_pointer}"
+flux_run="$(tr -d '\n' < "${flux_pointer}")"
+"${project_root}/scripts/server/run_container.sh" \
+  python3 -m flexmoe.bench.report validate "${flux_run}"
+
 touch "${smoke_root}/SUCCESS"
 echo "${smoke_root}"

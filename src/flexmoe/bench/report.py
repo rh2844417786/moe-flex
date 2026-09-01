@@ -6,6 +6,7 @@ import argparse
 import json
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
+from hashlib import sha256
 from math import isfinite
 from pathlib import Path
 from statistics import median
@@ -100,6 +101,7 @@ def validate_run_directory(run_dir: Path) -> RunEvidence:
         "environment.json",
         "events.jsonl",
         "metrics.json",
+        "preflight.json",
         "state.json",
     )
     for filename in required:
@@ -148,6 +150,74 @@ def validate_run_directory(run_dir: Path) -> RunEvidence:
         router_topk_match=exact_bool("router_topk_match"),
         weights_bit_exact=exact_bool("weights_bit_exact"),
     )
+    delegated_value = metrics.get("correctness_evidence")
+    delegated = isinstance(delegated_value, str)
+    if delegated:
+        delegated_path = Path(cast(str, delegated_value)).resolve()
+        if delegated_path == run_dir.resolve():
+            raise ValueError("correctness evidence cannot reference the same run")
+        delegated_evidence = validate_run_directory(delegated_path)
+        if not (
+            delegated_evidence.router_topk_match
+            and delegated_evidence.weights_bit_exact
+        ):
+            raise ValueError("delegated correctness evidence is incomplete")
+        current_config = _json_object(run_dir / "config.json")
+        delegated_config = _json_object(delegated_path / "config.json")
+        for field_name in (
+            "git_sha",
+            "model_path",
+            "dataset_sha256",
+            "tensor_parallel_size",
+        ):
+            if current_config.get(field_name) != delegated_config.get(field_name):
+                raise ValueError(
+                    f"delegated correctness evidence differs in {field_name}"
+                )
+
+    if evidence.weights_bit_exact and not delegated:
+        expected_weights = counter("weights_expected")
+        verified_weights = counter("weights_verified")
+        if expected_weights <= 0 or verified_weights != expected_weights:
+            raise ValueError("weight verification counters do not prove bit parity")
+
+    raw_router = metrics.get("router_trace")
+    if not delegated:
+        if not isinstance(raw_router, dict) or not raw_router:
+            raise ValueError("metrics contain no router trace manifest")
+        router_manifest = cast(dict[str, object], raw_router)
+        for filename, raw_entry in router_manifest.items():
+            if not isinstance(raw_entry, dict):
+                raise TypeError("router trace manifest entries must be objects")
+            entry = cast(dict[str, object], raw_entry)
+            trace_path = run_dir / "router" / filename
+            payload = trace_path.read_bytes()
+            if sha256(payload).hexdigest() != entry.get("sha256"):
+                raise ValueError(f"router trace SHA256 mismatch: {trace_path}")
+            if len(payload.splitlines()) != entry.get("line_count"):
+                raise ValueError(f"router trace line count mismatch: {trace_path}")
+
+    reference_value = metrics.get("reference_run")
+    if not isinstance(reference_value, str):
+        raise TypeError("validated FluxMoE run has no resident reference")
+    reference_metrics = _json_object(Path(reference_value) / "metrics.json")
+    current_repetitions = cast(list[object], raw_repetitions)
+    reference_repetitions = reference_metrics.get("repetitions")
+    if not isinstance(reference_repetitions, list):
+        raise TypeError("resident reference repetitions must be a list")
+
+    def output_tokens(repetitions: list[object]) -> list[object]:
+        tokens: list[object] = []
+        for repetition in repetitions:
+            if not isinstance(repetition, dict):
+                raise TypeError("repetition metrics must be objects")
+            tokens.append(repetition.get("output_token_ids"))
+        return tokens
+
+    if output_tokens(current_repetitions) != output_tokens(reference_repetitions):
+        raise ValueError("greedy output token IDs differ from resident reference")
+    if not delegated and reference_metrics.get("router_trace") != raw_router:
+        raise ValueError("router Top-k trace differs from resident reference")
     classification = classify_support(evidence, stressed_delta=0.0)
     if classification.status == "INCONCLUSIVE":
         raise ValueError(

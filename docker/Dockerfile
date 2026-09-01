@@ -17,8 +17,8 @@ RUN git clone --filter=blob:none --no-checkout \
     && test "$(git -C /opt/vllm-source rev-parse HEAD)" = "${VLLM_COMMIT}" \
     && installed_layer="$(python3 -c 'import sysconfig; from pathlib import Path; print(Path(sysconfig.get_paths()["purelib"]) / "vllm/model_executor/layers/fused_moe/layer.py")')" \
     && cmp -s /opt/vllm-source/vllm/model_executor/layers/fused_moe/layer.py "${installed_layer}" \
-    && git -C /opt/vllm-source apply --check /workspace/moe-flex/patches/vllm-v0.10.2.patch \
-    && git -C /opt/vllm-source apply /workspace/moe-flex/patches/vllm-v0.10.2.patch \
+    && git -C /opt/vllm-source apply --unidiff-zero --check /workspace/moe-flex/patches/vllm-v0.10.2.patch \
+    && git -C /opt/vllm-source apply --unidiff-zero /workspace/moe-flex/patches/vllm-v0.10.2.patch \
     && test "$(git -C /opt/vllm-source diff --name-only)" = \
       "vllm/model_executor/layers/fused_moe/layer.py" \
     && install -m 0644 \

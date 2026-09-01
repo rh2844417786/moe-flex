@@ -1,19 +1,10 @@
 diff --git a/vllm/model_executor/layers/fused_moe/layer.py b/vllm/model_executor/layers/fused_moe/layer.py
-index a90a711..5348303 100644
+index a90a711..8bf67e0 100644
 --- a/vllm/model_executor/layers/fused_moe/layer.py
 +++ b/vllm/model_executor/layers/fused_moe/layer.py
-@@ -1,6 +1,7 @@
- # SPDX-License-Identifier: Apache-2.0
- # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
- 
+@@ -3,0 +4 @@
 +import os
- from abc import abstractmethod
- from collections.abc import Iterable
- from enum import Enum
-@@ -292,6 +293,17 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
-     def create_weights(self, layer: torch.nn.Module, num_experts: int,
-                        hidden_size: int, intermediate_size_per_partition: int,
-                        params_dtype: torch.dtype, **extra_weight_attrs):
+@@ -294,0 +296,11 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
 +        if os.environ.get("FLUXMOE_ENABLE") == "1":
 +            from flexmoe.vllm.bridge import maybe_create_weights
 +            if maybe_create_weights(
@@ -25,13 +16,11 @@ index a90a711..5348303 100644
 +                    params_dtype=params_dtype,
 +                    **extra_weight_attrs):
 +                return
-         # Fused gate_up_proj (column parallel)
-         w13_weight = torch.nn.Parameter(torch.empty(
-             num_experts,
-@@ -1639,7 +1651,15 @@ class FusedMoE(CustomOp):
-         hidden_states: torch.Tensor,
-         router_logits: torch.Tensor,
-     ) -> Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+@@ -484,0 +497,3 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
++        if os.environ.get("FLUXMOE_TRACE_ROUTER") == "1":
++            from flexmoe.vllm.bridge import record_router_ids
++            record_router_ids(layer.layer_name, topk_ids)
+@@ -1642 +1657,9 @@ class FusedMoE(CustomOp):
 -        return self.forward_native(hidden_states, router_logits)
 +        if os.environ.get("FLUXMOE_ENABLE") != "1":
 +            return self.forward_native(hidden_states, router_logits)
@@ -42,6 +31,3 @@ index a90a711..5348303 100644
 +            return self.forward_native(hidden_states, router_logits)
 +        finally:
 +            after_forward(token)
- 
-     def forward_impl_chunked(
-         self,

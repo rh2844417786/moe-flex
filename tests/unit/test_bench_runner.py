@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from flexmoe.bench.runner import (
+    RunConfig,
+    compare_reference,
     create_run_directory,
     load_run_config,
     variant_environment,
@@ -65,7 +68,70 @@ def test_variant_environment_is_explicit_and_fail_closed() -> None:
     assert variant_environment("fluxmoe-fixed") == {
         "FLUXMOE_ENABLE": "1",
         "FLUXMOE_PLANNER_MODE": "fixed",
-        "FLUXMOE_VERIFY_WEIGHTS": "1",
     }
     with pytest.raises(ValueError, match="unsupported benchmark variant"):
         variant_environment("unknown")
+
+
+def test_reference_comparison_checks_tokens_router_and_delta(tmp_path: Path) -> None:
+    reference = tmp_path / "resident"
+    reference.mkdir()
+    config = RunConfig(
+        schema_version=1,
+        variant="fluxmoe-fixed",
+        model_path=Path("/model"),
+        dataset_path=Path("dataset.zst"),
+        dataset_manifest=Path("manifest.json"),
+        dataset_sha256="d" * 64,
+        batch_size=4,
+        context_length=1024,
+        output_length=16,
+        tensor_parallel_size=4,
+        dtype="bfloat16",
+        greedy=True,
+        enforce_eager=True,
+        gpu_memory_utilization=0.6,
+        warmups=3,
+        repetitions=3,
+        seed=7,
+        gpu_compressed_budget_bytes=1,
+        host_capacity_bytes=100,
+        gpu_decode_bytes_per_second=2.0,
+        host_h2d_bytes_per_second=1.0,
+    )
+    reference_config = {
+        "variant": "resident",
+        "model_path": "/model",
+        "dataset_sha256": "d" * 64,
+        "batch_size": 4,
+        "context_length": 1024,
+        "output_length": 16,
+        "tensor_parallel_size": 4,
+        "dtype": "bfloat16",
+        "seed": 7,
+    }
+    repetitions = [
+        {"output_tokens_per_second": value, "output_token_ids": [[1, 2]]}
+        for value in (90.0, 100.0, 110.0)
+    ]
+    router_manifest = {"rank-0.jsonl": {"sha256": "e" * 64, "line_count": 2}}
+    (reference / "config.json").write_text(
+        json.dumps(reference_config), encoding="utf-8"
+    )
+    (reference / "metrics.json").write_text(
+        json.dumps({"repetitions": repetitions, "router_trace": router_manifest}),
+        encoding="utf-8",
+    )
+    current = {
+        "repetitions": [
+            {"output_tokens_per_second": value, "output_token_ids": [[1, 2]]}
+            for value in (108.0, 120.0, 132.0)
+        ]
+    }
+
+    tokens_match, router_match, delta = compare_reference(
+        config, current, router_manifest, reference
+    )
+
+    assert tokens_match and router_match
+    assert delta == pytest.approx(0.2)

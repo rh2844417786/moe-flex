@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -86,7 +87,29 @@ def test_validate_run_directory_requires_complete_strict_evidence(
 ) -> None:
     run_dir = tmp_path / "20260901T120000Z-aaaaaaaaaaaa"
     run_dir.mkdir()
-    for filename in ("config.json", "environment.json"):
+    reference_dir = tmp_path / "resident-reference"
+    reference_dir.mkdir()
+    router_dir = run_dir / "router"
+    router_dir.mkdir()
+    router_payload = b'{"layer":"model.layers.0","sha256":"x"}\n'
+    (router_dir / "rank-0.jsonl").write_bytes(router_payload)
+    router_manifest = {
+        "rank-0.jsonl": {
+            "sha256": sha256(router_payload).hexdigest(),
+            "line_count": 1,
+        }
+    }
+    repetition_metrics = [
+        {"output_tokens_per_second": throughput, "output_token_ids": [[1, 2]]}
+        for throughput in (100.0, 110.0, 90.0)
+    ]
+    (reference_dir / "metrics.json").write_text(
+        json.dumps(
+            {"repetitions": repetition_metrics, "router_trace": router_manifest}
+        ),
+        encoding="utf-8",
+    )
+    for filename in ("config.json", "environment.json", "preflight.json"):
         (run_dir / filename).write_text("{}\n", encoding="utf-8")
     (run_dir / "events.jsonl").write_text('{"kind":"mapping"}\n')
     (run_dir / "state.json").write_text(
@@ -95,21 +118,21 @@ def test_validate_run_directory_requires_complete_strict_evidence(
     (run_dir / "metrics.json").write_text(
         json.dumps(
             {
-                "repetitions": [
-                    {"output_tokens_per_second": 100.0},
-                    {"output_tokens_per_second": 110.0},
-                    {"output_tokens_per_second": 90.0},
-                ],
+                "repetitions": repetition_metrics,
                 "mechanism_counters": {
                     "mapped_bytes": 4096,
                     "h2d_bytes": 2048,
                     "decompressed_bytes": 2048,
+                    "weights_expected": 96,
+                    "weights_verified": 96,
                 },
                 "correctness": {
                     "output_tokens_match": True,
                     "router_topk_match": True,
                     "weights_bit_exact": True,
                 },
+                "router_trace": router_manifest,
+                "reference_run": str(reference_dir),
             }
         ),
         encoding="utf-8",

@@ -27,7 +27,7 @@ def test_patch_applies_to_exact_vllm_checkout() -> None:
     project_root = Path(__file__).resolve().parents[2]
     patch = project_root / "patches" / "vllm-v0.10.2.patch"
     apply_check = subprocess.run(
-        ["git", "apply", "--check", str(patch)],
+        ["git", "apply", "--unidiff-zero", "--check", str(patch)],
         cwd=source,
         check=False,
         capture_output=True,
@@ -37,7 +37,14 @@ def test_patch_applies_to_exact_vllm_checkout() -> None:
         return
 
     subprocess.run(
-        ["git", "apply", "--reverse", "--check", str(patch)],
+        [
+            "git",
+            "apply",
+            "--unidiff-zero",
+            "--reverse",
+            "--check",
+            str(patch),
+        ],
         cwd=source,
         check=True,
         capture_output=True,
