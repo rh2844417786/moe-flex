@@ -14,8 +14,8 @@ from transformers import AutoTokenizer
 from flexmoe.datasets.sharegpt import (
     ChatTokenizerLike,
     prepare_subset,
-    sha256_file,
 )
+from flexmoe.manifest import sha256_file
 
 DATASET_REPO = "anon8231489123/ShareGPT_Vicuna_unfiltered"
 DATASET_REVISION = "192ab2185289094fc556ec8ce5ce1e8e587154ca"
