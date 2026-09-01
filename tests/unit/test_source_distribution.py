@@ -25,5 +25,7 @@ def test_source_distribution_contains_cuda_build_inputs(tmp_path: Path) -> None:
         names = stream.getnames()
 
     assert any(name.endswith("/csrc/bindings.cpp") for name in names)
+    assert any(name.endswith("/csrc/vmm/paged_region.cpp") for name in names)
+    assert any(name.endswith("/csrc/vmm/paged_region.h") for name in names)
     assert any(name.endswith("/third_party/vllm.lock.json") for name in names)
     assert any(name.endswith("/docker/Dockerfile") for name in names)
