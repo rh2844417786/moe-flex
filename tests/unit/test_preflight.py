@@ -9,6 +9,7 @@ from flexmoe.runtime.preflight import (
     ComputeProcess,
     GpuInfo,
     run_preflight,
+    select_idle_h100s,
     validate_checkpoint_files,
 )
 
@@ -108,3 +109,9 @@ def test_preflight_rejects_busy_formal_gpu(tmp_path: Path) -> None:
     exclusive = next(check for check in report.checks if check.name == "exclusive_gpus")
     assert exclusive.ok is False
     assert "other-job" in exclusive.details
+
+
+def test_idle_gpu_selection_excludes_busy_devices() -> None:
+    assert select_idle_h100s(FakeProbe(busy=True), 3) == (0, 1, 3)
+    with pytest.raises(PreflightError, match="only 3"):
+        select_idle_h100s(FakeProbe(busy=True), 4)

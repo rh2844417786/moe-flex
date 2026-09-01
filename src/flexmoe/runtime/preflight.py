@@ -2,13 +2,25 @@
 
 from __future__ import annotations
 
+import argparse
 import json
-from dataclasses import dataclass
+import os
+import subprocess
+from collections.abc import Sequence
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Protocol
 
-from flexmoe.config import ModelSpec, RuntimeConfig
+import torch
+
+from flexmoe.config import (
+    BenchmarkConfig,
+    ModelSpec,
+    PlannerConfig,
+    RuntimeConfig,
+)
 from flexmoe.errors import PreflightError
+from flexmoe.paged_tensor import PagedTensorRegion
 
 
 @dataclass(frozen=True)
@@ -179,3 +191,190 @@ def run_preflight(config: RuntimeConfig, probe: SystemProbe) -> PreflightReport:
         checks=tuple(checks),
         environment=environment,
     )
+
+
+def _command(*arguments: str) -> str:
+    try:
+        return subprocess.run(
+            list(arguments),
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise PreflightError(f"command failed: {' '.join(arguments)}: {error}") from error
+
+
+class NvidiaSystemProbe:
+    """Real Linux/NVIDIA probe used only inside the pinned server image."""
+
+    def gpu_inventory(self) -> tuple[GpuInfo, ...]:
+        rows = _command(
+            "nvidia-smi",
+            "--query-gpu=index,name,memory.total",
+            "--format=csv,noheader,nounits",
+        )
+        inventory: list[GpuInfo] = []
+        for row in rows.splitlines():
+            fields = [field.strip() for field in row.split(",")]
+            if len(fields) != 3:
+                raise PreflightError(f"unexpected nvidia-smi GPU row: {row}")
+            inventory.append(
+                GpuInfo(
+                    index=int(fields[0]),
+                    name=fields[1],
+                    total_memory=int(fields[2]) * 1024 * 1024,
+                )
+            )
+        return tuple(inventory)
+
+    def compute_processes(self) -> tuple[ComputeProcess, ...]:
+        uuid_rows = _command(
+            "nvidia-smi",
+            "--query-gpu=index,uuid",
+            "--format=csv,noheader,nounits",
+        )
+        uuid_to_index = {
+            fields[1]: int(fields[0])
+            for row in uuid_rows.splitlines()
+            if len(fields := [field.strip() for field in row.split(",")]) == 2
+        }
+        rows = _command(
+            "nvidia-smi",
+            "--query-compute-apps=gpu_uuid,pid,process_name",
+            "--format=csv,noheader,nounits",
+        )
+        processes: list[ComputeProcess] = []
+        for row in rows.splitlines():
+            if not row.strip():
+                continue
+            fields = [field.strip() for field in row.split(",", maxsplit=2)]
+            if len(fields) != 3 or fields[0] not in uuid_to_index:
+                raise PreflightError(f"unexpected nvidia-smi process row: {row}")
+            processes.append(
+                ComputeProcess(
+                    gpu_index=uuid_to_index[fields[0]],
+                    pid=int(fields[1]),
+                    process_name=fields[2],
+                )
+            )
+        return tuple(processes)
+
+    def mount_options(self, path: Path) -> frozenset[str]:
+        resolved = path.resolve()
+        matches: list[tuple[int, frozenset[str]]] = []
+        for line in Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines():
+            left, separator, right = line.partition(" - ")
+            if not separator:
+                continue
+            fields = left.split()
+            right_fields = right.split()
+            if len(fields) < 6 or len(right_fields) < 3:
+                continue
+            mount_point = Path(fields[4].replace("\\040", " "))
+            try:
+                resolved.relative_to(mount_point)
+            except ValueError:
+                continue
+            options = frozenset(fields[5].split(",")) | frozenset(
+                right_fields[2].split(",")
+            )
+            matches.append((len(str(mount_point)), options))
+        if not matches:
+            raise PreflightError(f"cannot resolve mount options for {path}")
+        return max(matches, key=lambda item: item[0])[1]
+
+    def driver_version(self) -> str:
+        return _command(
+            "nvidia-smi",
+            "--query-gpu=driver_version",
+            "--format=csv,noheader,nounits",
+        ).splitlines()[0]
+
+    def torch_version(self) -> str:
+        return torch.__version__
+
+    def vllm_commit(self) -> str:
+        value = os.environ.get("FLEXMOE_VLLM_COMMIT")
+        if not value:
+            raise PreflightError("FLEXMOE_VLLM_COMMIT is not set")
+        return value
+
+    def vmm_supported(self, device: int) -> bool:
+        try:
+            region = PagedTensorRegion(device=device, virtual_bytes=1)
+            return region.granularity > 0
+        except (RuntimeError, ValueError):
+            return False
+
+
+def select_idle_h100s(probe: SystemProbe, count: int) -> tuple[int, ...]:
+    if type(count) is not int or count <= 0:
+        raise ValueError("count must be a positive int")
+    busy = {process.gpu_index for process in probe.compute_processes()}
+    eligible = tuple(
+        gpu.index
+        for gpu in sorted(probe.gpu_inventory(), key=lambda item: item.index)
+        if "H100" in gpu.name and gpu.index not in busy
+    )
+    if len(eligible) < count:
+        raise PreflightError(
+            f"requested {count} idle H100 GPUs, but only {len(eligible)} are available"
+        )
+    return eligible[:count]
+
+
+def _report_json(report: PreflightReport) -> dict[str, object]:
+    return {
+        "ok": report.ok,
+        "checks": [asdict(check) for check in report.checks],
+        "environment": report.environment,
+    }
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    select_parser = subparsers.add_parser("select-gpus")
+    select_parser.add_argument("--count", type=int, required=True)
+    check_parser = subparsers.add_parser("check")
+    check_parser.add_argument("--project-root", type=Path, required=True)
+    check_parser.add_argument("--model-path", type=Path, required=True)
+    check_parser.add_argument("--gpu-ids", required=True)
+    check_parser.add_argument("--output", type=Path, required=True)
+    arguments = parser.parse_args(argv)
+    probe = NvidiaSystemProbe()
+    if arguments.command == "select-gpus":
+        print(",".join(str(device) for device in select_idle_h100s(probe, arguments.count)))
+        return 0
+    if arguments.command == "check":
+        gpu_ids = tuple(int(item) for item in arguments.gpu_ids.split(","))
+        config = RuntimeConfig(
+            project_root=arguments.project_root,
+            model=ModelSpec(
+                path=arguments.model_path,
+                architecture="Qwen3NextForCausalLM",
+                dtype="bfloat16",
+                expected_shards=41,
+            ),
+            planner=PlannerConfig(),
+            benchmark=BenchmarkConfig(
+                variant="vllm-resident",
+                batch_size=4,
+                context_length=128,
+                output_length=16,
+            ),
+            gpu_ids=gpu_ids,
+        )
+        report = run_preflight(config, probe)
+        arguments.output.parent.mkdir(parents=True, exist_ok=True)
+        arguments.output.write_text(
+            json.dumps(_report_json(report), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return 0 if report.ok else 1
+    raise AssertionError(f"unhandled command {arguments.command}")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

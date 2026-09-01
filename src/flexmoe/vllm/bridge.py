@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from hashlib import sha256
 from math import prod
 from pathlib import Path
 from threading import Lock
@@ -97,6 +98,8 @@ class _TensorPool:
         self._mapped_blocks: dict[int, int] = {}
         self._free_blocks = list(self.blocks)
         self._mapping_lock = Lock()
+        self._mapped_bytes_total = 0
+        self._mapping_count = 0
 
     def create_parameter(self, layer_idx: int) -> torch.nn.Parameter:
         if layer_idx in self.parameters:
@@ -124,6 +127,8 @@ class _TensorPool:
             offset = layer_idx * self.aligned_bytes
             self.region.map(offset, block, self.aligned_bytes)
             self._mapped_blocks[layer_idx] = block
+            self._mapped_bytes_total += self.aligned_bytes
+            self._mapping_count += 1
 
     def unmap_layer(self, layer_idx: int) -> None:
         with self._mapping_lock:
@@ -144,6 +149,10 @@ class _TensorPool:
         if not 0 <= expert_idx < parameter.shape[0]:
             raise IntegrityError(f"expert {expert_idx} is outside the tensor")
         return parameter[expert_idx]
+
+    def mapping_counters(self) -> tuple[int, int]:
+        with self._mapping_lock:
+            return self._mapped_bytes_total, self._mapping_count
 
 
 _LAYER_PATTERN = re.compile(r"(?:^|\.)layers\.(\d+)(?:\.|$)")
@@ -184,19 +193,38 @@ def _tensor_id(layer_idx: int, expert_idx: int, kind: TensorKind) -> str:
     return f"layer.{layer_idx}.expert.{expert_idx}.{kind}"
 
 
+def _tensor_bytes(tensor: torch.Tensor) -> bytes:
+    if tensor.device.type != "cpu":
+        tensor = tensor.cpu()
+    return (
+        tensor.contiguous()
+        .view(torch.int16)
+        .numpy()
+        .astype("<i2", copy=False)
+        .tobytes()
+    )
+
+
 class _LayerKindMaterializer(LayerMaterializer):
     def __init__(
         self,
         *,
         kind: TensorKind,
         num_experts: int,
+        device: int,
         pool: _TensorPool,
         hierarchy: StorageHierarchy,
+        expected_hashes: Mapping[str, str],
+        verify_weights: bool,
     ) -> None:
         self._kind = kind
         self._num_experts = num_experts
+        self._device = device
         self._pool = pool
         self._hierarchy = hierarchy
+        self._expected_hashes = dict(expected_hashes)
+        self._verify_weights = verify_weights
+        self._verified: set[str] = set()
         self._receipts: list[MaterializationReceipt] = []
         self._lock = Lock()
 
@@ -214,12 +242,32 @@ class _LayerKindMaterializer(LayerMaterializer):
         receipts = self._hierarchy.materialize_layer(
             layer_idx, destinations, stream=load_stream
         )
+        verified_ids: list[str] = []
+        if self._verify_weights:
+            external_stream = torch.cuda.ExternalStream(  # type: ignore[no-untyped-call]
+                load_stream, device=self._device
+            )
+            external_stream.synchronize()
+            for tensor_id, destination in destinations.items():
+                actual = sha256(_tensor_bytes(destination)).hexdigest()
+                expected = self._expected_hashes[tensor_id]
+                if actual != expected:
+                    raise IntegrityError(
+                        f"materialized BF16 bits differ for {tensor_id}: "
+                        f"expected {expected}, got {actual}"
+                    )
+                verified_ids.append(tensor_id)
         with self._lock:
+            self._verified.update(verified_ids)
             self._receipts.extend(receipts)
 
     def receipts(self) -> tuple[MaterializationReceipt, ...]:
         with self._lock:
             return tuple(self._receipts)
+
+    def verification_counts(self) -> tuple[int, int]:
+        with self._lock:
+            return len(self._verified), len(self._expected_hashes)
 
 
 class FluxMoERegistry:
@@ -405,12 +453,13 @@ class FluxMoERegistry:
         placement_by_id = {
             placement.tensor_id: placement for placement in placements
         }
+        expected_hashes = {
+            tensor_id: sha256(_tensor_bytes(tensor)).hexdigest()
+            for tensor_id, tensor in raw_tensors.items()
+        }
         gpu_inputs = {
             tensor_id: encode_bf16_bits(
-                tensor.view(torch.int16)
-                .numpy()
-                .astype("<i2", copy=False)
-                .tobytes(),
+                _tensor_bytes(tensor),
                 tuple(tensor.shape),
             )
             for tensor_id, tensor in raw_tensors.items()
@@ -452,8 +501,14 @@ class FluxMoERegistry:
             materializer = _LayerKindMaterializer(
                 kind=kind,
                 num_experts=self.num_experts,
+                device=self.device,
                 pool=self._pools[kind],
                 hierarchy=hierarchy,
+                expected_hashes={
+                    tensor_id: expected_hashes[tensor_id]
+                    for tensor_id in kind_ids
+                },
+                verify_weights=os.environ.get("FLUXMOE_VERIFY_WEIGHTS") == "1",
             )
             self._materializers[kind] = materializer
             materializers[kind] = materializer
@@ -502,6 +557,37 @@ class FluxMoERegistry:
         for kind in sorted(self._materializers):
             receipts.extend(self._materializers[kind].receipts())
         return tuple(receipts)
+
+    def mechanism_counters(self) -> dict[str, int]:
+        receipts = self.receipts()
+        mapped_bytes = 0
+        mapping_count = 0
+        weights_verified = 0
+        weights_expected = 0
+        for pool in self._pools.values():
+            pool_bytes, pool_count = pool.mapping_counters()
+            mapped_bytes += pool_bytes
+            mapping_count += pool_count
+        for materializer in self._materializers.values():
+            verified, expected = materializer.verification_counts()
+            weights_verified += verified
+            weights_expected += expected
+        return {
+            "mapped_bytes": mapped_bytes,
+            "mapping_count": mapping_count,
+            "h2d_bytes": sum(
+                receipt.nbytes
+                for receipt in receipts
+                if receipt.backend == "host_pinned"
+            ),
+            "decompressed_bytes": sum(
+                receipt.nbytes
+                for receipt in receipts
+                if receipt.backend == "gpu_compressed"
+            ),
+            "weights_verified": weights_verified,
+            "weights_expected": weights_expected,
+        }
 
     def close(self) -> None:
         lifecycle = self._lifecycle

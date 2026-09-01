@@ -191,7 +191,7 @@ def write_jsonl_zst(records: Iterable[PromptRecord], path: Path) -> str:
     return sha256_file(path)
 
 
-def _read_jsonl_zst(path: Path) -> list[PromptRecord]:
+def read_jsonl_zst(path: Path) -> list[PromptRecord]:
     records: list[PromptRecord] = []
     decompressor = zstd.ZstdDecompressor()
     with (
@@ -225,7 +225,7 @@ def verify_subset(path: Path, manifest_path: Path) -> None:
     if actual_hash != manifest.get("sha256"):
         raise ValueError("subset SHA256 mismatch")
 
-    records = _read_jsonl_zst(path)
+    records = read_jsonl_zst(path)
     expected_count = int(manifest["record_count"])
     if len(records) != expected_count:
         raise ValueError(

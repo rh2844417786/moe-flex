@@ -29,6 +29,7 @@ RUN git clone --filter=blob:none --no-checkout \
 
 ENV FLEXMOE_BUILD_CUDA=1
 ENV TORCH_CUDA_ARCH_LIST=9.0
+ENV FLEXMOE_VLLM_COMMIT=01efc7ef781391e744ed08c3292817a773d654e6
 
 RUN nvcc --version \
     && python3 -m pip install --disable-pip-version-check --root-user-action=ignore --no-build-isolation -e . \

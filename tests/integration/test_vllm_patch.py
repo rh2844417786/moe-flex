@@ -26,10 +26,28 @@ def test_patch_applies_to_exact_vllm_checkout() -> None:
 
     project_root = Path(__file__).resolve().parents[2]
     patch = project_root / "patches" / "vllm-v0.10.2.patch"
-    subprocess.run(
+    apply_check = subprocess.run(
         ["git", "apply", "--check", str(patch)],
+        cwd=source,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if apply_check.returncode == 0:
+        return
+
+    subprocess.run(
+        ["git", "apply", "--reverse", "--check", str(patch)],
         cwd=source,
         check=True,
         capture_output=True,
         text=True,
     )
+    touched = subprocess.run(
+        ["git", "diff", "--name-only"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert touched == ["vllm/model_executor/layers/fused_moe/layer.py"]

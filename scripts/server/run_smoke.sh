@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+git_sha="$(git -C "${project_root}" rev-parse HEAD)"
+smoke_root="${project_root}/runs/smoke-${git_sha}"
+preflight="${project_root}/runs/preflight-${git_sha}.json"
+if [[ ! -s "${preflight}" ]]; then
+  echo "run scripts/server/preflight.sh first" >&2
+  exit 2
+fi
+if ! python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["ok"] else 1)' "${preflight}"; then
+  echo "preflight did not pass: ${preflight}" >&2
+  exit 3
+fi
+mkdir -p "${smoke_root}"
+
+"${project_root}/scripts/server/run_container.sh" bash -lc '
+  set -euo pipefail
+  pytest tests/unit -q
+  pytest tests/cuda/test_extension_import.py tests/cuda/test_paged_region.py tests/cuda/test_stream_lifecycle.py tests/cuda/test_huffman_cuda.py tests/cuda/test_storage_hierarchy.py -q
+  VLLM_SOURCE_DIR=/opt/vllm-source pytest tests/integration/test_vllm_patch.py -q
+  pytest tests/integration/test_fused_moe_parity.py -q
+  compute-sanitizer --error-exitcode=9 --tool memcheck python3 -m pytest tests/cuda/test_paged_region.py tests/cuda/test_huffman_cuda.py tests/cuda/test_storage_hierarchy.py -q -k "not ten_thousand"
+  compute-sanitizer --error-exitcode=10 --tool racecheck python3 -m pytest tests/cuda/test_stream_lifecycle.py -q -k "not ten_thousand"
+'
+
+touch "${smoke_root}/SUCCESS"
+echo "${smoke_root}"
