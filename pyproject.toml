@@ -12,7 +12,8 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 dependencies = [
   "huggingface-hub==0.34.3",
-  "numpy==1.26.4",
+  'numpy==1.26.4; platform_system == "Darwin"',
+  'numpy==2.2.6; platform_system == "Linux"',
   "pyyaml>=6.0,<7",
   "torch==2.8.0",
   "transformers==4.55.2",
