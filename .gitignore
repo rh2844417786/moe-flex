@@ -1,1 +1,15 @@
 .worktrees/
+.cache/
+.venv/
+artifacts/
+runs/
+build/
+dist/
+*.egg-info/
+*.so
+*.dylib
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+benchmarks/data/sharegpt/raw/

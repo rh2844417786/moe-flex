@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "moe-flex"
+version = "0.1.0"
+description = "H100 cross-hardware reproduction of FluxMoE"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = [
+  "huggingface-hub>=0.27,<2",
+  "numpy>=1.26,<3",
+  "pyyaml>=6.0,<7",
+  "torch==2.8.0",
+  "zstandard>=0.23,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2,<2",
+  "mypy>=1.13,<2",
+  "pytest>=8.3,<9",
+  "ruff>=0.8,<1",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "cuda: requires a CUDA-capable Linux host",
+  "integration: requires pinned vLLM",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+packages = ["flexmoe"]
