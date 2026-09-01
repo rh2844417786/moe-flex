@@ -1,3 +1,4 @@
 recursive-include csrc *.cpp *.cu *.h
 include third_party/vllm.lock.json
+include patches/vllm-v0.10.2.patch
 include docker/Dockerfile

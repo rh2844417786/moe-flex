@@ -26,7 +26,9 @@ jobs:
           file: docker/Dockerfile
           platforms: linux/amd64
           push: true
-          build-args: VCS_REF=${{ github.sha }}
+          build-args: |
+            VCS_REF=${{ github.sha }}
+            VLLM_COMMIT=01efc7ef781391e744ed08c3292817a773d654e6
           tags: |
             ghcr.io/rh2844417786/moe-flex:${{ github.sha }}
             ghcr.io/rh2844417786/moe-flex:repro-fluxmoe
