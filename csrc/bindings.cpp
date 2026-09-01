@@ -2,6 +2,7 @@
 #include <pybind11/stl.h>
 #include <torch/extension.h>
 
+#include "codec/huffman.h"
 #include "runtime/stream_lifecycle.h"
 #include "vmm/paged_region.h"
 
@@ -36,6 +37,15 @@ std::int64_t cuda_driver_version() {
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
   module.def("extension_version", &extension_version);
   module.def("cuda_driver_version", &cuda_driver_version);
+  module.def("huffman_decode", &flexmoe::huffman_decode_cuda,
+             pybind11::arg("sign_mantissa"),
+             pybind11::arg("exponent_payload"),
+             pybind11::arg("chunk_byte_offsets"),
+             pybind11::arg("chunk_bit_lengths"), pybind11::arg("trie_left"),
+             pybind11::arg("trie_right"), pybind11::arg("trie_symbol"),
+             pybind11::arg("destination"), pybind11::arg("errors"),
+             pybind11::arg("chunk_elements"),
+             pybind11::arg("stream_handle"));
   pybind11::class_<flexmoe::PagedRegion,
                    std::shared_ptr<flexmoe::PagedRegion>>(module,
                                                           "PagedRegion")

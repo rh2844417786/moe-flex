@@ -18,6 +18,7 @@ if build_cuda:
             "flexmoe._C",
             sources=[
                 "csrc/bindings.cpp",
+                "csrc/codec/huffman_cuda.cu",
                 "csrc/runtime/stream_lifecycle.cu",
                 "csrc/vmm/paged_region.cpp",
             ],

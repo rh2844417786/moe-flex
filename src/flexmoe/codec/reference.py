@@ -86,7 +86,7 @@ def _code_lengths(symbols: list[int]) -> tuple[int, ...]:
     return tuple(lengths)
 
 
-def _canonical_codes(code_lengths: tuple[int, ...]) -> dict[int, tuple[int, int]]:
+def canonical_codes(code_lengths: tuple[int, ...]) -> dict[int, tuple[int, int]]:
     if len(code_lengths) != 256 or any(length < 0 for length in code_lengths):
         raise IntegrityError("code lengths must contain 256 non-negative values")
     ordered = sorted(
@@ -153,7 +153,7 @@ def encode_bf16_bits(raw: bytes, shape: tuple[int, ...]) -> EncodedBFloat16:
         exponents.append((word >> 7) & 0xFF)
 
     lengths = _code_lengths(exponents)
-    codes = _canonical_codes(lengths)
+    codes = canonical_codes(lengths)
     payload = bytearray()
     offsets: list[int] = []
     bit_lengths: list[int] = []
@@ -231,7 +231,7 @@ def decode_bf16_bits(encoded: EncodedBFloat16) -> bytes:
     if sum(encoded.chunk_bit_lengths) != encoded.bit_count:
         raise IntegrityError("aggregate bit count mismatch")
 
-    codes = _canonical_codes(encoded.code_lengths)
+    codes = canonical_codes(encoded.code_lengths)
     reverse_codes = {
         (length, code): symbol for symbol, (code, length) in codes.items()
     }
