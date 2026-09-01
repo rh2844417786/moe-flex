@@ -2,6 +2,7 @@
 #include <pybind11/stl.h>
 #include <torch/extension.h>
 
+#include "runtime/stream_lifecycle.h"
 #include "vmm/paged_region.h"
 
 #include <cstdint>
@@ -57,4 +58,27 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
                              &flexmoe::PagedRegion::virtual_bytes)
       .def_property_readonly("granularity",
                              &flexmoe::PagedRegion::granularity);
+  pybind11::class_<flexmoe::StreamLifecycle>(module, "StreamLifecycle")
+      .def(pybind11::init<int, std::int64_t>(), pybind11::arg("device"),
+           pybind11::arg("total_layers"))
+      .def("record_load_done", &flexmoe::StreamLifecycle::record_load_done,
+           pybind11::arg("layer_idx"))
+      .def("wait_load_done", &flexmoe::StreamLifecycle::wait_load_done,
+           pybind11::arg("layer_idx"),
+           pybind11::arg("compute_stream_handle"))
+      .def("record_compute_done",
+           &flexmoe::StreamLifecycle::record_compute_done,
+           pybind11::arg("layer_idx"),
+           pybind11::arg("compute_stream_handle"))
+      .def("synchronize_compute_done",
+           &flexmoe::StreamLifecycle::synchronize_compute_done,
+           pybind11::arg("layer_idx"))
+      .def("synchronize_load_stream",
+           &flexmoe::StreamLifecycle::synchronize_load_stream)
+      .def("snapshot", &flexmoe::StreamLifecycle::snapshot)
+      .def_property_readonly("device", &flexmoe::StreamLifecycle::device)
+      .def_property_readonly("total_layers",
+                             &flexmoe::StreamLifecycle::total_layers)
+      .def_property_readonly("load_stream",
+                             &flexmoe::StreamLifecycle::load_stream);
 }

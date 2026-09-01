@@ -16,7 +16,11 @@ if build_cuda:
     ext_modules = [
         CUDAExtension(
             "flexmoe._C",
-            sources=["csrc/bindings.cpp", "csrc/vmm/paged_region.cpp"],
+            sources=[
+                "csrc/bindings.cpp",
+                "csrc/runtime/stream_lifecycle.cu",
+                "csrc/vmm/paged_region.cpp",
+            ],
             extra_link_args=["-lcuda"],
             extra_compile_args={
                 "cxx": ["-O3", "-std=c++17"],
