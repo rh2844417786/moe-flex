@@ -150,8 +150,76 @@ def test_reference_comparison_checks_tokens_router_and_delta(tmp_path: Path) -> 
     )
 
     assert tokens_match and router_match
+    assert current["performance_output_tokens_match"] is True
     assert current["router_full_trace_match"] is False
     assert delta == pytest.approx(0.2)
+
+
+def test_reference_comparison_records_performance_token_mismatch(
+    tmp_path: Path,
+) -> None:
+    reference = tmp_path / "resident"
+    reference.mkdir()
+    config = RunConfig(
+        schema_version=1,
+        variant="fluxmoe-fixed",
+        model_path=Path("/model"),
+        dataset_path=Path("dataset.zst"),
+        dataset_manifest=Path("manifest.json"),
+        dataset_sha256="d" * 64,
+        batch_size=4,
+        context_length=1024,
+        output_length=16,
+        tensor_parallel_size=4,
+        dtype="bfloat16",
+        greedy=True,
+        enforce_eager=True,
+        gpu_memory_utilization=0.6,
+        warmups=3,
+        repetitions=1,
+        seed=7,
+        gpu_compressed_budget_bytes=1,
+        host_capacity_bytes=100,
+        gpu_decode_bytes_per_second=2.0,
+        host_h2d_bytes_per_second=1.0,
+    )
+    (reference / "config.json").write_text(
+        json.dumps(
+            {
+                "variant": "resident",
+                "model_path": "/model",
+                "dataset_sha256": "d" * 64,
+                "batch_size": 4,
+                "context_length": 1024,
+                "output_length": 16,
+                "tensor_parallel_size": 4,
+                "dtype": "bfloat16",
+                "seed": 7,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (reference / "metrics.json").write_text(
+        json.dumps(
+            {
+                "repetitions": [
+                    {"output_tokens_per_second": 10.0, "output_token_ids": [[1]]}
+                ],
+                "router_trace": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    current: dict[str, object] = {
+        "repetitions": [
+            {"output_tokens_per_second": 10.0, "output_token_ids": [[2]]}
+        ]
+    }
+
+    tokens_match, _, _ = compare_reference(config, current, {}, reference)
+
+    assert tokens_match is False
+    assert current["performance_output_tokens_match"] is False
 
 
 def test_sampling_seed_is_part_of_reproducibility_contract() -> None:

@@ -82,3 +82,8 @@ router trace 会保留用于审计；由于 Qwen3-Next 在独立 vLLM engine 间
 不确定，Top-k gate 严格比较初始化时两次确定性的全层专家集合 probe。吞吐结果在该
 probe、greedy token、bit-exact 权重以及非零映射/HtoD/解压证据齐全前保持
 `INCONCLUSIVE`。
+
+性能矩阵引用同一 commit 的 smoke correctness 证据。Qwen3-Next 多请求打包可能使
+独立性能轮次的 greedy token 不稳定，因此矩阵保留每轮 token 和稳定性/跨 variant
+匹配字段用于审计，但不会把这种已知非确定性冒充为容量 OOM，也不会替代单请求 smoke
+中的严格 token parity gate。

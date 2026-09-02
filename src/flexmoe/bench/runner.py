@@ -334,6 +334,7 @@ def compare_reference(
         and len(current_tokens) == len(current_repetitions)
         and current_tokens == reference_tokens
     )
+    metrics["performance_output_tokens_match"] = output_tokens_match
     reference_router = reference_metrics.get("router_trace")
     metrics["router_full_trace_match"] = reference_router == router_manifest
     router_topk_match = router_probes_match(reference_router, router_manifest)
@@ -427,7 +428,9 @@ def _aggregate_worker_counters(
     return totals
 
 
-def _execute_vllm(config: RunConfig) -> dict[str, object]:
+def _execute_vllm(
+    config: RunConfig, *, require_stable_output: bool
+) -> dict[str, object]:
     workload = load_workload(
         dataset=config.dataset_path,
         manifest=config.dataset_manifest,
@@ -470,6 +473,7 @@ def _execute_vllm(config: RunConfig) -> dict[str, object]:
         engine.generate(prompts, sampling, use_tqdm=False)
     repetitions: list[dict[str, object]] = []
     reference_tokens: list[list[int]] | None = None
+    output_tokens_stable = True
     for repetition in range(config.repetitions):
         started = perf_counter()
         outputs = engine.generate(prompts, sampling, use_tqdm=False)
@@ -479,7 +483,9 @@ def _execute_vllm(config: RunConfig) -> dict[str, object]:
         if reference_tokens is None:
             reference_tokens = token_ids
         elif token_ids != reference_tokens:
-            raise RuntimeError("greedy output tokens changed between repetitions")
+            output_tokens_stable = False
+            if require_stable_output:
+                raise RuntimeError("greedy output tokens changed between repetitions")
         repetitions.append(
             {
                 "repetition": repetition,
@@ -501,6 +507,7 @@ def _execute_vllm(config: RunConfig) -> dict[str, object]:
         "variant": config.variant,
         "dataset_sha256": workload.dataset_sha256,
         "repetitions": repetitions,
+        "output_tokens_stable": output_tokens_stable,
         "mechanism_counters": counters,
     }
 
@@ -587,7 +594,9 @@ def run_benchmark(
         },
     )
     try:
-        metrics = _execute_vllm(config)
+        metrics = _execute_vllm(
+            config, require_stable_output=correctness_mode
+        )
         raw_counters = metrics.get("mechanism_counters")
         if not isinstance(raw_counters, dict):
             raise TypeError("benchmark mechanism counters are missing")
@@ -625,7 +634,7 @@ def run_benchmark(
             from flexmoe.bench.report import validate_run_directory
 
             evidence_path = correctness_evidence.resolve()
-            validate_run_directory(evidence_path)
+            delegated_evidence = validate_run_directory(evidence_path)
             evidence_config = json.loads(
                 (evidence_path / "config.json").read_text(encoding="utf-8")
             )
@@ -643,10 +652,9 @@ def run_benchmark(
                         f"correctness evidence differs in {field_name}"
                     )
             metrics["correctness_evidence"] = str(evidence_path)
-            router_topk_match = True
-            weights_bit_exact = True
-            if resident_failure_run is not None:
-                output_tokens_match = True
+            output_tokens_match = delegated_evidence.output_tokens_match
+            router_topk_match = delegated_evidence.router_topk_match
+            weights_bit_exact = delegated_evidence.weights_bit_exact
         delayed_oom = False
         if validated_resident_failure is not None:
             delayed_oom = True

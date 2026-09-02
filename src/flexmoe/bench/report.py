@@ -159,7 +159,8 @@ def validate_run_directory(run_dir: Path) -> RunEvidence:
             raise ValueError("correctness evidence cannot reference the same run")
         delegated_evidence = validate_run_directory(delegated_path)
         if not (
-            delegated_evidence.router_topk_match
+            delegated_evidence.output_tokens_match
+            and delegated_evidence.router_topk_match
             and delegated_evidence.weights_bit_exact
         ):
             raise ValueError("delegated correctness evidence is incomplete")
@@ -225,7 +226,7 @@ def validate_run_directory(run_dir: Path) -> RunEvidence:
                 tokens.append(repetition.get("output_token_ids"))
             return tokens
 
-        if output_tokens(current_repetitions) != output_tokens(
+        if not delegated and output_tokens(current_repetitions) != output_tokens(
             reference_repetitions
         ):
             raise ValueError("greedy output token IDs differ from resident reference")
