@@ -701,6 +701,13 @@ def require_active_registry() -> FluxMoERegistry:
         return _ACTIVE_REGISTRY
 
 
+class FluxMoEWorkerExtension:
+    """Named vLLM worker RPCs that do not require callable serialization."""
+
+    def fluxmoe_mechanism_counters(self) -> dict[str, int]:
+        return require_active_registry().mechanism_counters()
+
+
 def _total_layers_from_model_path() -> int:
     model_path = os.environ.get("FLUXMOE_MODEL_PATH")
     if not model_path:
@@ -843,6 +850,7 @@ def after_forward(token: ForwardToken) -> None:
 
 __all__ = [
     "FluxMoERegistry",
+    "FluxMoEWorkerExtension",
     "ForwardToken",
     "RegistryStorageConfig",
     "after_forward",

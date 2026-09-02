@@ -10,6 +10,7 @@ from flexmoe.errors import UnsupportedModeError
 from flexmoe.storage.base import MaterializationReceipt
 from flexmoe.vllm.bridge import (
     FluxMoERegistry,
+    FluxMoEWorkerExtension,
     RegistryStorageConfig,
     install_registry,
     maybe_create_weights,
@@ -76,6 +77,27 @@ def test_disabled_bridge_leaves_vllm_creation_untouched(
         intermediate_size_per_partition=2,
         params_dtype=torch.bfloat16,
     )
+
+
+def test_worker_extension_reads_process_local_registry() -> None:
+    registry = FluxMoERegistry(
+        total_layers=2,
+        device=0,
+        tp_rank=0,
+        tp_size=1,
+        num_experts=2,
+        region_factory=_FakeRegion,
+    )
+    install_registry(registry)
+
+    assert FluxMoEWorkerExtension().fluxmoe_mechanism_counters() == {
+        "mapped_bytes": 0,
+        "mapping_count": 0,
+        "h2d_bytes": 0,
+        "decompressed_bytes": 0,
+        "weights_verified": 0,
+        "weights_expected": 0,
+    }
 
 
 def test_enabled_bridge_registers_paged_parameters_and_loader(

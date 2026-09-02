@@ -8,6 +8,7 @@ import pytest
 
 from flexmoe.bench.runner import (
     RunConfig,
+    _aggregate_worker_counters,
     compare_reference,
     create_run_directory,
     load_run_config,
@@ -140,3 +141,45 @@ def test_reference_comparison_checks_tokens_router_and_delta(tmp_path: Path) -> 
 def test_sampling_seed_is_part_of_reproducibility_contract() -> None:
     source = Path(__file__).parents[2] / "src/flexmoe/bench/runner.py"
     assert "seed=config.seed" in source.read_text(encoding="utf-8")
+
+
+def test_worker_mechanism_counters_are_aggregated_across_tp_ranks() -> None:
+    counters = {
+        "mapped_bytes": 10,
+        "mapping_count": 2,
+        "h2d_bytes": 20,
+        "decompressed_bytes": 30,
+        "weights_verified": 48,
+        "weights_expected": 48,
+    }
+
+    totals = _aggregate_worker_counters(
+        [dict(counters) for _ in range(4)], expected_workers=4
+    )
+
+    assert totals == {
+        "mapped_bytes": 40,
+        "mapping_count": 8,
+        "h2d_bytes": 80,
+        "decompressed_bytes": 120,
+        "weights_verified": 192,
+        "weights_expected": 192,
+    }
+
+
+def test_worker_mechanism_counters_fail_closed() -> None:
+    counters = {
+        "mapped_bytes": 10,
+        "mapping_count": 2,
+        "h2d_bytes": 20,
+        "decompressed_bytes": 30,
+        "weights_verified": 48,
+        "weights_expected": 48,
+    }
+
+    with pytest.raises(RuntimeError, match="expected 4"):
+        _aggregate_worker_counters([counters], expected_workers=4)
+    invalid = [dict(counters) for _ in range(4)]
+    invalid[2].pop("weights_verified")
+    with pytest.raises(RuntimeError, match="unexpected fields"):
+        _aggregate_worker_counters(invalid, expected_workers=4)

@@ -42,6 +42,14 @@ _VARIANTS = {
     "pagedtensor-resident",
 }
 _IMPLEMENTED_VARIANTS = {"resident", "fluxmoe-fixed"}
+_MECHANISM_COUNTER_NAMES = (
+    "mapped_bytes",
+    "mapping_count",
+    "h2d_bytes",
+    "decompressed_bytes",
+    "weights_verified",
+    "weights_expected",
+)
 
 
 @dataclass(frozen=True)
@@ -364,6 +372,38 @@ def _configure_environment(config: RunConfig) -> None:
     os.environ.update(values)
 
 
+def _aggregate_worker_counters(
+    worker_counters: object, *, expected_workers: int
+) -> dict[str, int]:
+    if not isinstance(worker_counters, list):
+        raise TypeError("vLLM worker mechanism counters must be a list")
+    if len(worker_counters) != expected_workers:
+        raise RuntimeError(
+            "vLLM returned mechanism counters from "
+            f"{len(worker_counters)} workers; expected {expected_workers}"
+        )
+    totals = dict.fromkeys(_MECHANISM_COUNTER_NAMES, 0)
+    expected_names = set(_MECHANISM_COUNTER_NAMES)
+    for worker_index, counters in enumerate(worker_counters):
+        if not isinstance(counters, dict):
+            raise TypeError(
+                f"mechanism counters from worker {worker_index} are not an object"
+            )
+        if set(counters) != expected_names:
+            raise RuntimeError(
+                f"mechanism counters from worker {worker_index} have unexpected fields"
+            )
+        for name in _MECHANISM_COUNTER_NAMES:
+            value = counters[name]
+            if type(value) is not int or value < 0:
+                raise TypeError(
+                    f"mechanism counter {name} from worker {worker_index} "
+                    "must be a non-negative int"
+                )
+            totals[name] += value
+    return totals
+
+
 def _execute_vllm(config: RunConfig) -> dict[str, object]:
     workload = load_workload(
         dataset=config.dataset_path,
@@ -387,6 +427,11 @@ def _execute_vllm(config: RunConfig) -> dict[str, object]:
         disable_custom_all_reduce=True,
         trust_remote_code=False,
         seed=config.seed,
+        worker_extension_cls=(
+            "flexmoe.vllm.bridge.FluxMoEWorkerExtension"
+            if os.environ.get("FLUXMOE_ENABLE") == "1"
+            else ""
+        ),
     )
     sampling = sampling_class(
         temperature=0.0,
@@ -421,11 +466,19 @@ def _execute_vllm(config: RunConfig) -> dict[str, object]:
                 "output_token_ids": token_ids,
             }
         )
+    if os.environ.get("FLUXMOE_ENABLE") == "1":
+        counters = _aggregate_worker_counters(
+            engine.collective_rpc("fluxmoe_mechanism_counters"),
+            expected_workers=config.tensor_parallel_size,
+        )
+    else:
+        counters = dict.fromkeys(_MECHANISM_COUNTER_NAMES, 0)
     return {
         "schema_version": 1,
         "variant": config.variant,
         "dataset_sha256": workload.dataset_sha256,
         "repetitions": repetitions,
+        "mechanism_counters": counters,
     }
 
 
@@ -512,20 +565,10 @@ def run_benchmark(
     )
     try:
         metrics = _execute_vllm(config)
-        if os.environ.get("FLUXMOE_ENABLE") == "1":
-            from flexmoe.vllm.bridge import require_active_registry
-
-            counters = require_active_registry().mechanism_counters()
-        else:
-            counters = {
-                "mapped_bytes": 0,
-                "mapping_count": 0,
-                "h2d_bytes": 0,
-                "decompressed_bytes": 0,
-                "weights_verified": 0,
-                "weights_expected": 0,
-            }
-        metrics["mechanism_counters"] = counters
+        raw_counters = metrics.get("mechanism_counters")
+        if not isinstance(raw_counters, dict):
+            raise TypeError("benchmark mechanism counters are missing")
+        counters = cast(dict[str, int], raw_counters)
         router_manifest = (
             _router_trace_manifest(router_trace_root) if correctness_mode else {}
         )
