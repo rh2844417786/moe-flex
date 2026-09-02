@@ -64,6 +64,12 @@ for ((index = 0; index < ${#gpu_array[@]}; index++)); do
   container_gpu_ids+="${index}"
 done
 
+# This H100 host requires the bonded management interface for NCCL bootstrap
+# and disables NVLink Switch collectives, which otherwise stall before load.
+nccl_socket_ifname="${NCCL_SOCKET_IFNAME:-bond0}"
+nccl_p2p_level="${NCCL_P2P_LEVEL:-NVL}"
+nccl_nvls_enable="${NCCL_NVLS_ENABLE:-0}"
+
 # Docker CLI 29 parses an unquoted comma-separated device list as both a count
 # and DeviceIDs. Preserve the inner quotes as part of the argument.
 exec docker run --rm \
@@ -78,4 +84,7 @@ exec docker run --rm \
   --env "CUDA_VISIBLE_DEVICES=${container_gpu_ids}" \
   --env "HOST_GPU_IDS=${GPU_IDS}" \
   --env "FLEXMOE_PROJECT_ROOT=${expected_root}" \
+  --env "NCCL_SOCKET_IFNAME=${nccl_socket_ifname}" \
+  --env "NCCL_P2P_LEVEL=${nccl_p2p_level}" \
+  --env "NCCL_NVLS_ENABLE=${nccl_nvls_enable}" \
   "${image}" "$@"
