@@ -391,6 +391,7 @@ def _execute_vllm(config: RunConfig) -> dict[str, object]:
     sampling = sampling_class(
         temperature=0.0,
         max_tokens=config.output_length,
+        seed=config.seed,
     )
     prompts = [
         {"prompt_token_ids": list(request.prompt_token_ids)}

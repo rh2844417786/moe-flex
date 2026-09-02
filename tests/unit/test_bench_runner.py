@@ -135,3 +135,8 @@ def test_reference_comparison_checks_tokens_router_and_delta(tmp_path: Path) -> 
 
     assert tokens_match and router_match
     assert delta == pytest.approx(0.2)
+
+
+def test_sampling_seed_is_part_of_reproducibility_contract() -> None:
+    source = Path(__file__).parents[2] / "src/flexmoe/bench/runner.py"
+    assert "seed=config.seed" in source.read_text(encoding="utf-8")
