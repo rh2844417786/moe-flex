@@ -34,7 +34,7 @@ RUN cd /workspace/moe-flex \
     && echo "d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c  docker/wheels/packaging-26.3-py3-none-any.whl" | sha256sum --check --strict \
     && echo "44e1ad92c8ca002de6377e165f3e0f1be63266ab4d554740532335b9d75ea669  docker/wheels/pluggy-1.5.0-py3-none-any.whl" | sha256sum --check --strict \
     && echo "c69214aa47deac29fad6c2a4f590b9c4a9fdb16a403176fe154b79c0b4d4d820  docker/wheels/pytest-8.3.5-py3-none-any.whl" | sha256sum --check --strict \
-    && echo "6f77fa49079891a4aab203d0b1744acc85577ed16d767b52fc089d83faf8d8ed  docker/wheels/zstandard-0.23.0-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" | sha256sum --check --strict \
+    && echo "72c68dda124a1a138340fb62fa21b9bf4848437d9ca60bd35db36f2d3345f373  docker/wheels/zstandard-0.23.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" | sha256sum --check --strict \
     && python3 -m pip install --disable-pip-version-check --root-user-action=ignore \
       --no-index --no-deps --find-links=/workspace/moe-flex/docker/wheels \
       iniconfig==2.0.0 packaging==26.3 pluggy==1.5.0 pytest==8.3.5 zstandard==0.23.0
