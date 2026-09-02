@@ -648,9 +648,8 @@ def record_router_ids(layer_name: str, topk_ids: torch.Tensor) -> None:
             rank = int(rank_value)
         except ValueError as error:
             raise IntegrityError(f"invalid RANK value {rank_value}") from error
-    normalized = (
-        topk_ids.detach().to(device="cpu", dtype=torch.int64).contiguous()
-    )
+    normalized = topk_ids.detach().to(device="cpu", dtype=torch.int64)
+    normalized = normalized.sort(dim=1).values.contiguous()
     digest = sha256(
         normalized.numpy().astype("<i8", copy=False).tobytes()
     ).hexdigest()
