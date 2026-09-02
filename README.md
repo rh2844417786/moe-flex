@@ -31,7 +31,7 @@ GitHub，服务器从公开仓库拉取后，在 4 张独占 NVIDIA H100 80GB PC
 
 - 已实现 CUDA VMM 稳定地址、双层 RAW/WAR 生命周期、BF16 canonical
   Huffman CUDA 解码、GPU 压缩存储、pinned-host HtoD 和固定 vLLM 单文件 hook。
-- Python 3.10/3.11 CPU CI 与公开 GHCR 的 `linux/amd64` CUDA 编译已通过。
+- Python 3.10/3.11 CPU CI 与 `linux/amd64` CUDA 镜像编译已通过。
 - 当前可执行对照是 `resident` 与 `fluxmoe-fixed`。`vllm-o`、dynamic、
   unbalanced 和 pagedtensor-resident 仅保留为 `DEV_ONLY` 配置合同，runner 会
   显式拒绝，避免错误标注实验。
@@ -51,8 +51,10 @@ pytest tests/unit -q
 
 ## 服务器执行
 
-以下命令只创建新 checkout/新容器，不修改已有的 `wth333` 容器；模型目录始终
-以只读方式挂载，所有结果写入
+以下命令只创建新 checkout/新容器，不修改已有的 `wth333` 容器。服务器仅从
+Docker Hub 拉取固定 digest 的 `vllm/vllm-openai:v0.10.2`，随后以
+`--network=none` 从 Git checkout 构建本地镜像；不会访问 GHCR、apt、PyPI
+或在服务器重新下载 vLLM 源码。模型目录始终以只读方式挂载，所有结果写入
 `/home/jovyan/wangtonghan/moe-flex/runs/`。
 
 ```bash

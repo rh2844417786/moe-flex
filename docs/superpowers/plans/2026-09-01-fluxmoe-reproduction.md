@@ -6,7 +6,7 @@
 
 **Architecture:** Keep FluxMoE as an out-of-tree Python/C++/CUDA package and apply a small, pinned patch to vLLM v0.10.2 at expert-parameter creation and `FusedMoE.forward_cuda`. A fail-closed loader diverts only routed-expert BF16 weights into the storage hierarchy; a two-layer PagedTensor window materializes the current/next layer while telemetry records every mapping, transfer, decompression, planner decision, and benchmark result.
 
-**Tech Stack:** Python 3.11, PyTorch 2.8.0, CUDA 12.x driver/runtime compatible with vLLM v0.10.2, C++17, CUDA Driver VMM API, pybind11 via `torch.utils.cpp_extension`, vLLM v0.10.2, pytest, Ruff, mypy, PyYAML, zstandard, Hugging Face Hub, Docker/GHCR, NVIDIA H100.
+**Tech Stack:** Python 3.11, PyTorch 2.8.0, CUDA 12.x driver/runtime compatible with vLLM v0.10.2, C++17, CUDA Driver VMM API, pybind11 via `torch.utils.cpp_extension`, vLLM v0.10.2, pytest, Ruff, mypy, PyYAML, zstandard, Hugging Face Hub, Docker Hub/local Docker build, NVIDIA H100.
 
 **Spec:** `docs/superpowers/specs/2026-09-01-fluxmoe-reproduction-design.md`
 
@@ -26,6 +26,7 @@
 - Correctness is strict: reconstructed BF16 bits, router Top-k IDs, and greedy output tokens must match the resident baseline.
 - Performance conclusions are trend-based, not exact L40 number matching; valid statuses are `SUPPORTED`, `MIXED`, `NOT_SUPPORTED`, and `INCONCLUSIVE`.
 - Missing telemetry, silent fallback, checkpoint mismatch, unsupported quantization, writable model mount, or unverified CUDA Graph must fail closed.
+- Server transport update (2026-09-02): the server can pull Git and Docker Hub but cannot reach GHCR or general CDNs. It pulls the digest-pinned `vllm/vllm-openai:v0.10.2` base, then builds `moe-flex-local:<git-sha>` with `--network=none`. No server-side apt, PyPI, GHCR, or vLLM-source download is allowed.
 
 ---
 
@@ -1302,7 +1303,7 @@ The report CLI exposes four concrete subcommands: `latest --root runs` prints th
 
 `preflight.sh` writes `preflight.json`; `run_smoke.sh` runs unit/CUDA/tiny integration tests; `run_key_matrix.sh` runs only after smoke status is successful.
 
-`build.sh` computes `IMAGE_TAG=$(git rev-parse HEAD)` and pulls `ghcr.io/rh2844417786/moe-flex:${IMAGE_TAG}`. It verifies the image label `org.opencontainers.image.revision` equals the checkout SHA and fails instead of silently using `latest` or installing packages into `wth333`.
+`build.sh` computes the current Git SHA, pulls the digest-pinned `vllm/vllm-openai:v0.10.2` base from Docker Hub, and builds `moe-flex-local:${GIT_SHA}` with `--network=none`. It verifies `org.opencontainers.image.revision` against the checkout SHA and fails instead of silently using `latest` or installing packages into `wth333`.
 
 - [ ] **Step 6: Run CPU telemetry/report tests and shell syntax checks**
 
@@ -1329,7 +1330,7 @@ git push origin repro/fluxmoe
 - Optional small summary update: `docs/results/h100-smoke-summary.md`
 
 **Interfaces:**
-- Consumes: public `repro/fluxmoe` branch, GHCR image, read-only model, 4 exclusive GPUs.
+- Consumes: public `repro/fluxmoe` branch, digest-pinned Docker Hub base plus locally built image, read-only model, 4 exclusive GPUs.
 - Produces: verified server SHA, CUDA test outputs, full-model parity, and structured evidence.
 
 - [ ] **Step 1: Clone or fast-forward the exact execution branch on the server**

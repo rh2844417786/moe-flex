@@ -35,11 +35,25 @@ for gpu in "${gpu_array[@]}"; do
 done
 
 git_sha="$(git -C "${project_root}" rev-parse HEAD)"
-image="ghcr.io/rh2844417786/moe-flex:${git_sha}"
+image_env="${project_root}/build/image.env"
+if [[ ! -s "${image_env}" ]]; then
+  echo "run scripts/server/build.sh before starting a container" >&2
+  exit 8
+fi
+source "${project_root}/build/image.env"
+if [[ -z "${IMAGE:-}" || -z "${GIT_SHA:-}" ]]; then
+  echo "invalid image metadata in ${image_env}" >&2
+  exit 9
+fi
+if [[ "${GIT_SHA}" != "${git_sha}" ]]; then
+  echo "image metadata is for ${GIT_SHA}, checkout is ${git_sha}" >&2
+  exit 10
+fi
+image="${IMAGE}"
 image_revision="$(docker image inspect "${image}" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
 if [[ "${image_revision}" != "${git_sha}" ]]; then
-  echo "pull and verify ${image} with scripts/server/build.sh first" >&2
-  exit 8
+  echo "build and verify ${image} with scripts/server/build.sh first" >&2
+  exit 11
 fi
 
 container_gpu_ids=""

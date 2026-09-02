@@ -1,7 +1,9 @@
 {
   "commit": "01efc7ef781391e744ed08c3292817a773d654e6",
   "patch_sha256": "0a706dba0b462539e3de39276e93a63f93a14ec8fc0ea8638b1b430fba2eb0d6",
+  "patched_layer_sha256": "a79ba498cabc41bc03ca4f2e51b92d54422aa39de1f53032e88e13a012bbcbcd",
   "repository": "https://github.com/vllm-project/vllm.git",
   "tag": "v0.10.2",
-  "torch": "2.8.0"
+  "torch": "2.8.0",
+  "upstream_layer_sha256": "f6a741cf80028f10c261ccdc72ab54b5301f865cb3a1cc5209656459cb796198"
 }

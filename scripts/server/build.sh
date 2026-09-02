@@ -9,8 +9,20 @@ if [[ "${project_root}" != "${expected_root}" ]]; then
 fi
 
 git_sha="$(git -C "${project_root}" rev-parse HEAD)"
-image="ghcr.io/rh2844417786/moe-flex:${git_sha}"
-docker pull "${image}"
+base_image="vllm/vllm-openai:v0.10.2@sha256:607442e407b0fea97f8a132a78b787c121a996dd4de181fa08e8da06e71ec2db"
+image="moe-flex-local:${git_sha}"
+
+# Docker Hub is the only required non-Git transport. All RUN instructions are
+# forced offline so an accidental apt/PyPI/GitHub dependency fails immediately.
+docker pull "${base_image}"
+docker build \
+  --pull=false \
+  --network=none \
+  --build-arg "VCS_REF=${git_sha}" \
+  --build-arg "VLLM_COMMIT=01efc7ef781391e744ed08c3292817a773d654e6" \
+  --tag "${image}" \
+  --file "${project_root}/docker/Dockerfile" \
+  "${project_root}"
 
 image_revision="$(docker image inspect "${image}" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
 vllm_commit="$(docker image inspect "${image}" --format '{{ index .Config.Labels "io.moe-flex.vllm-commit" }}')"
@@ -24,6 +36,7 @@ if [[ "${vllm_commit}" != "01efc7ef781391e744ed08c3292817a773d654e6" ]]; then
 fi
 
 mkdir -p "${project_root}/build"
-printf 'IMAGE=%s\nGIT_SHA=%s\n' "${image}" "${git_sha}" > \
+printf 'IMAGE=%s\nGIT_SHA=%s\nBASE_IMAGE=%s\n' \
+  "${image}" "${git_sha}" "${base_image}" > \
   "${project_root}/build/image.env"
 echo "${image}"
