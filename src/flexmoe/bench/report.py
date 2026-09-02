@@ -13,6 +13,7 @@ from statistics import median
 from typing import cast
 
 from flexmoe.config import RunStatus
+from flexmoe.bench.router_trace import router_probes_match
 
 
 @dataclass(frozen=True)
@@ -196,6 +197,16 @@ def validate_run_directory(run_dir: Path) -> RunEvidence:
                 raise ValueError(f"router trace SHA256 mismatch: {trace_path}")
             if len(payload.splitlines()) != entry.get("line_count"):
                 raise ValueError(f"router trace line count mismatch: {trace_path}")
+            probe_line_count = entry.get("probe_line_count")
+            lines = payload.splitlines(keepends=True)
+            if (
+                type(probe_line_count) is not int
+                or not 0 < probe_line_count <= len(lines)
+            ):
+                raise ValueError(f"invalid router probe line count: {trace_path}")
+            probe_payload = b"".join(lines[:probe_line_count])
+            if sha256(probe_payload).hexdigest() != entry.get("probe_sha256"):
+                raise ValueError(f"router probe SHA256 mismatch: {trace_path}")
 
     reference_value = metrics.get("reference_run")
     failure_value = metrics.get("resident_failure_run")
@@ -218,7 +229,9 @@ def validate_run_directory(run_dir: Path) -> RunEvidence:
             reference_repetitions
         ):
             raise ValueError("greedy output token IDs differ from resident reference")
-        if not delegated and reference_metrics.get("router_trace") != raw_router:
+        if not delegated and not router_probes_match(
+            reference_metrics.get("router_trace"), raw_router
+        ):
             raise ValueError("router Top-k trace differs from resident reference")
     elif isinstance(failure_value, str):
         failure = _json_object(Path(failure_value) / "error.json")

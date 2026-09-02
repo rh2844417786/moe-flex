@@ -115,12 +115,27 @@ def test_reference_comparison_checks_tokens_router_and_delta(tmp_path: Path) -> 
         {"output_tokens_per_second": value, "output_token_ids": [[1, 2]]}
         for value in (90.0, 100.0, 110.0)
     ]
-    router_manifest = {"rank-0.jsonl": {"sha256": "e" * 64, "line_count": 2}}
+    reference_router = {
+        "rank-0.jsonl": {
+            "sha256": "e" * 64,
+            "line_count": 2,
+            "probe_sha256": "a" * 64,
+            "probe_line_count": 1,
+        }
+    }
+    router_manifest = {
+        "rank-0.jsonl": {
+            "sha256": "f" * 64,
+            "line_count": 2,
+            "probe_sha256": "a" * 64,
+            "probe_line_count": 1,
+        }
+    }
     (reference / "config.json").write_text(
         json.dumps(reference_config), encoding="utf-8"
     )
     (reference / "metrics.json").write_text(
-        json.dumps({"repetitions": repetitions, "router_trace": router_manifest}),
+        json.dumps({"repetitions": repetitions, "router_trace": reference_router}),
         encoding="utf-8",
     )
     current = {
@@ -135,6 +150,7 @@ def test_reference_comparison_checks_tokens_router_and_delta(tmp_path: Path) -> 
     )
 
     assert tokens_match and router_match
+    assert current["router_full_trace_match"] is False
     assert delta == pytest.approx(0.2)
 
 

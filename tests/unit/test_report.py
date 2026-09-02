@@ -97,6 +97,8 @@ def test_validate_run_directory_requires_complete_strict_evidence(
         "rank-0.jsonl": {
             "sha256": sha256(router_payload).hexdigest(),
             "line_count": 1,
+            "probe_sha256": sha256(router_payload).hexdigest(),
+            "probe_line_count": 1,
         }
     }
     repetition_metrics = [

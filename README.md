@@ -77,6 +77,8 @@ scripts/server/run_key_matrix.sh
 git pull --ff-only origin repro/fluxmoe
 ```
 
-任何 preflight、CUDA/sanitizer、正确性或机制计数失败都会阻止性能矩阵。吞吐结果
-在 router Top-k、greedy token、bit-exact 权重以及非零映射/HtoD/解压证据齐全前
-保持 `INCONCLUSIVE`。
+任何 preflight、CUDA/sanitizer、正确性或机制计数失败都会阻止性能矩阵。完整
+router trace 会保留用于审计；由于 Qwen3-Next 在独立 vLLM engine 间的实际请求路由
+不确定，Top-k gate 严格比较初始化时两次确定性的全层专家集合 probe。吞吐结果在该
+probe、greedy token、bit-exact 权重以及非零映射/HtoD/解压证据齐全前保持
+`INCONCLUSIVE`。

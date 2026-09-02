@@ -21,6 +21,7 @@ import torch
 import yaml  # type: ignore[import-untyped]
 
 from flexmoe.bench.workload import load_workload
+from flexmoe.bench.router_trace import router_probes_match
 from flexmoe.errors import UnsupportedModeError
 from flexmoe.runtime.telemetry import JsonlTelemetry
 
@@ -228,20 +229,41 @@ def _write_json(path: Path, value: object) -> None:
     )
 
 
-def _router_trace_manifest(root: Path) -> dict[str, dict[str, int | str]]:
+def _router_trace_manifest(
+    root: Path, *, expected_ranks: int, probe_records: int
+) -> dict[str, dict[str, int | str]]:
     files = sorted(root.glob("rank-*.jsonl"))
-    if not files:
-        raise RuntimeError(f"no router trace files were written under {root}")
+    expected_files = [root / f"rank-{rank}.jsonl" for rank in range(expected_ranks)]
+    if files != expected_files:
+        raise RuntimeError(f"router trace rank files are incomplete under {root}")
+    if probe_records <= 0:
+        raise ValueError("router probe must contain at least one record")
     manifest: dict[str, dict[str, int | str]] = {}
     for path in files:
         payload = path.read_bytes()
         if not payload:
             raise RuntimeError(f"router trace is empty: {path}")
+        lines = payload.splitlines(keepends=True)
+        if len(lines) < probe_records:
+            raise RuntimeError(f"router trace has an incomplete probe: {path}")
+        probe_payload = b"".join(lines[:probe_records])
         manifest[path.name] = {
             "sha256": sha256(payload).hexdigest(),
-            "line_count": len(payload.splitlines()),
+            "line_count": len(lines),
+            "probe_sha256": sha256(probe_payload).hexdigest(),
+            "probe_line_count": probe_records,
         }
     return manifest
+
+
+def _model_hidden_layers(model_path: Path) -> int:
+    parsed = json.loads((model_path / "config.json").read_text(encoding="utf-8"))
+    if not isinstance(parsed, dict):
+        raise TypeError("model config must be a JSON object")
+    hidden_layers = parsed.get("num_hidden_layers")
+    if type(hidden_layers) is not int or hidden_layers <= 0:
+        raise ValueError("model config has invalid num_hidden_layers")
+    return hidden_layers
 
 
 def _median_throughput(metrics: Mapping[str, object]) -> float:
@@ -313,7 +335,8 @@ def compare_reference(
         and current_tokens == reference_tokens
     )
     reference_router = reference_metrics.get("router_trace")
-    router_topk_match = reference_router == router_manifest
+    metrics["router_full_trace_match"] = reference_router == router_manifest
+    router_topk_match = router_probes_match(reference_router, router_manifest)
     reference_throughput = _median_throughput(
         cast(dict[str, object], reference_metrics)
     )
@@ -570,7 +593,13 @@ def run_benchmark(
             raise TypeError("benchmark mechanism counters are missing")
         counters = cast(dict[str, int], raw_counters)
         router_manifest = (
-            _router_trace_manifest(router_trace_root) if correctness_mode else {}
+            _router_trace_manifest(
+                router_trace_root,
+                expected_ranks=config.tensor_parallel_size,
+                probe_records=2 * _model_hidden_layers(config.model_path),
+            )
+            if correctness_mode
+            else {}
         )
         if router_manifest:
             metrics["router_trace"] = router_manifest

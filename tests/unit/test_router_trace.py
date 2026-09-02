@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 import torch
 
+from flexmoe.bench.router_trace import router_probes_match
 from flexmoe.vllm.bridge import record_router_ids, reset_router_trace_state
 
 
@@ -29,3 +30,51 @@ def test_router_trace_records_exact_expert_sets(
     assert records[0]["sha256"] == records[1]["sha256"]
     assert records[0]["sha256"] != records[2]["sha256"]
     assert records[0]["shape"] == [2, 2]
+
+
+def _manifest(*, full_sha: str = "a", probe_sha: str = "b") -> dict[str, object]:
+    return {
+        "rank-0.jsonl": {
+            "sha256": full_sha * 64,
+            "line_count": 1296,
+            "probe_sha256": probe_sha * 64,
+            "probe_line_count": 96,
+        }
+    }
+
+
+def test_router_probe_match_allows_different_full_trace() -> None:
+    assert router_probes_match(_manifest(full_sha="a"), _manifest(full_sha="c"))
+
+
+def test_router_probe_match_rejects_different_probe() -> None:
+    assert not router_probes_match(_manifest(probe_sha="a"), _manifest(probe_sha="b"))
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        {},
+        {"rank-1.jsonl": _manifest()["rank-0.jsonl"]},
+        {"rank-0.jsonl": {}},
+        {
+            "rank-0.jsonl": {
+                "sha256": "a" * 64,
+                "line_count": 95,
+                "probe_sha256": "b" * 64,
+                "probe_line_count": 96,
+            }
+        },
+        {
+            "rank-0.jsonl": {
+                "sha256": "not-a-sha",
+                "line_count": 1296,
+                "probe_sha256": "b" * 64,
+                "probe_line_count": 96,
+            }
+        },
+    ],
+)
+def test_router_probe_match_fails_closed(invalid: dict[str, object]) -> None:
+    assert not router_probes_match(_manifest(), invalid)
+    assert not router_probes_match(invalid, _manifest())
