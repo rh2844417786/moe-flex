@@ -382,6 +382,9 @@ def _execute_vllm(config: RunConfig) -> dict[str, object]:
         dtype=config.dtype,
         enforce_eager=config.enforce_eager,
         gpu_memory_utilization=config.gpu_memory_utilization,
+        # vLLM custom all-reduce stalls before weight loading on this host's
+        # four-GPU partition. Use the standard NCCL collective instead.
+        disable_custom_all_reduce=True,
         trust_remote_code=False,
         seed=config.seed,
     )
@@ -475,6 +478,7 @@ def run_benchmark(
             "torch_cuda": torch.version.cuda,
             "git_sha": git_sha,
             "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES", ""),
+            "vllm_disable_custom_all_reduce": True,
         },
     )
     _configure_environment(config)
