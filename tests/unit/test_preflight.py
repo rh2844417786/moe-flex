@@ -37,8 +37,9 @@ def make_checkpoint(root: Path, shard_count: int = 2) -> ModelSpec:
 
 
 class FakeProbe:
-    def __init__(self, *, busy: bool = False) -> None:
+    def __init__(self, *, busy: bool = False, compute_ok: bool = True) -> None:
         self.busy = busy
+        self.compute_ok = compute_ok
 
     def gpu_inventory(self) -> tuple[GpuInfo, ...]:
         return tuple(
@@ -66,6 +67,9 @@ class FakeProbe:
 
     def vmm_supported(self, device: int) -> bool:
         return device in {0, 1, 2, 3}
+
+    def cuda_compute_supported(self, device: int) -> bool:
+        return self.compute_ok and device in {0, 1, 2, 3}
 
 
 def runtime_config(tmp_path: Path) -> RuntimeConfig:
@@ -109,6 +113,14 @@ def test_preflight_rejects_busy_formal_gpu(tmp_path: Path) -> None:
     exclusive = next(check for check in report.checks if check.name == "exclusive_gpus")
     assert exclusive.ok is False
     assert "other-job" in exclusive.details
+
+
+def test_preflight_rejects_gpu_without_cuda_compute(tmp_path: Path) -> None:
+    report = run_preflight(runtime_config(tmp_path), FakeProbe(compute_ok=False))
+
+    compute = next(check for check in report.checks if check.name == "cuda_compute")
+    assert compute.ok is False
+    assert compute.details == "supported=[]"
 
 
 def test_idle_gpu_selection_excludes_busy_devices() -> None:

@@ -76,6 +76,8 @@ class SystemProbe(Protocol):
 
     def vmm_supported(self, device: int) -> bool: ...
 
+    def cuda_compute_supported(self, device: int) -> bool: ...
+
 
 def validate_checkpoint_files(spec: ModelSpec) -> tuple[Path, ...]:
     """Validate model identity and every indexed non-empty shard."""
@@ -176,6 +178,16 @@ def run_preflight(config: RuntimeConfig, probe: SystemProbe) -> PreflightReport:
             "cuda_vmm",
             len(vmm_devices) == len(selected),
             f"supported={vmm_devices}",
+        )
+    )
+    compute_devices = [
+        device for device in selected if probe.cuda_compute_supported(device)
+    ]
+    checks.append(
+        _check(
+            "cuda_compute",
+            len(compute_devices) == len(selected),
+            f"supported={compute_devices}",
         )
     )
 
@@ -304,6 +316,15 @@ class NvidiaSystemProbe:
         try:
             region = PagedTensorRegion(device=device, virtual_bytes=1)
             return region.granularity > 0
+        except (RuntimeError, ValueError):
+            return False
+
+    def cuda_compute_supported(self, device: int) -> bool:
+        try:
+            with torch.cuda.device(device):
+                value = torch.ones(1, device=f"cuda:{device}")
+                torch.cuda.synchronize(device)
+                return value.item() == 1.0
         except (RuntimeError, ValueError):
             return False
 
