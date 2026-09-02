@@ -30,12 +30,15 @@ VLLM_AUDIT_SOURCE="${VLLM_AUDIT_SOURCE:-}" \
 
 resident_pointer="${smoke_root}/resident-run.txt"
 flux_pointer="${smoke_root}/fluxmoe-fixed-run.txt"
+# vLLM 0.10.2's early Qwen3-Next hybrid scheduler is not batch invariant.
+# Isolate one request so this gate measures resident/FluxMoE parity rather
+# than request packing order; the key matrix retains production batches.
 "${project_root}/scripts/server/run_container.sh" \
   python3 -m flexmoe.bench.runner \
   --config benchmarks/configs/resident.yaml \
   --project-root "${project_root}" \
   --runs-root "${project_root}/runs" \
-  --batch-size 4 \
+  --batch-size 1 \
   --context-length 1024 \
   --correctness-mode \
   --result-path-file "${resident_pointer}"
@@ -46,7 +49,7 @@ resident_run="$(tr -d '\n' < "${resident_pointer}")"
   --config benchmarks/configs/fluxmoe_fixed.yaml \
   --project-root "${project_root}" \
   --runs-root "${project_root}/runs" \
-  --batch-size 4 \
+  --batch-size 1 \
   --context-length 1024 \
   --reference-run "${resident_run}" \
   --correctness-mode \
