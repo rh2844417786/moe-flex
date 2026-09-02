@@ -57,4 +57,5 @@ def test_server_dockerfile_has_no_non_dockerhub_network_steps() -> None:
     assert "--no-build-isolation" in dockerfile
     assert "--no-index" in dockerfile
     assert "pytest==8.3.5" in dockerfile
+    assert "zstandard==0.23.0" in dockerfile
     assert "sha256sum --check --strict" in dockerfile
