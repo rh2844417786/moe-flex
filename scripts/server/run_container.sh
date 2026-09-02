@@ -64,9 +64,11 @@ for ((index = 0; index < ${#gpu_array[@]}; index++)); do
   container_gpu_ids+="${index}"
 done
 
+# Docker CLI 29 parses an unquoted comma-separated device list as both a count
+# and DeviceIDs. Preserve the inner quotes as part of the argument.
 exec docker run --rm \
   --entrypoint "" \
-  --gpus "device=${GPU_IDS}" \
+  --gpus "\"device=${GPU_IDS}\"" \
   --ipc=host \
   --network=host \
   --ulimit nofile=65535:65535 \
