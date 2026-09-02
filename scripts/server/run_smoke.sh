@@ -15,7 +15,8 @@ if ! python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["ok
 fi
 mkdir -p "${smoke_root}"
 
-"${project_root}/scripts/check_vllm_patch.sh"
+VLLM_AUDIT_SOURCE="${VLLM_AUDIT_SOURCE:-}" \
+  "${project_root}/scripts/check_vllm_patch.sh"
 
 "${project_root}/scripts/server/run_container.sh" bash -lc '
   set -euo pipefail
