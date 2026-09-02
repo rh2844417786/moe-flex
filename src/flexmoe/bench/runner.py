@@ -647,6 +647,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--runs-root", type=Path, default=Path("runs"))
     parser.add_argument("--batch-size", type=int)
     parser.add_argument("--context-length", type=int)
+    parser.add_argument("--output-length", type=int)
     parser.add_argument("--reference-run", type=Path)
     parser.add_argument("--correctness-mode", action="store_true")
     parser.add_argument("--correctness-evidence", type=Path)
@@ -658,6 +659,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         config = replace(config, batch_size=arguments.batch_size)
     if arguments.context_length is not None:
         config = replace(config, context_length=arguments.context_length)
+    if arguments.output_length is not None:
+        if arguments.output_length <= 0:
+            parser.error("--output-length must be positive")
+        config = replace(config, output_length=arguments.output_length)
     run_dir = run_benchmark(
         config,
         project_root=arguments.project_root.resolve(),

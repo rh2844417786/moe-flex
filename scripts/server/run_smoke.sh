@@ -40,6 +40,7 @@ flux_pointer="${smoke_root}/fluxmoe-fixed-run.txt"
   --runs-root "${project_root}/runs" \
   --batch-size 1 \
   --context-length 1024 \
+  --output-length 4 \
   --correctness-mode \
   --result-path-file "${resident_pointer}"
 resident_run="$(tr -d '\n' < "${resident_pointer}")"
@@ -51,6 +52,7 @@ resident_run="$(tr -d '\n' < "${resident_pointer}")"
   --runs-root "${project_root}/runs" \
   --batch-size 1 \
   --context-length 1024 \
+  --output-length 4 \
   --reference-run "${resident_run}" \
   --correctness-mode \
   --result-path-file "${flux_pointer}"

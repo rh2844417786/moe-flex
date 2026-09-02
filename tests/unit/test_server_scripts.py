@@ -19,7 +19,11 @@ def test_smoke_uses_single_request_for_qwen3_next_parity() -> None:
     script = Path("scripts/server/run_smoke.sh").read_text(encoding="utf-8")
 
     assert script.count("--batch-size 1") == 2
+    assert script.count("--output-length 4") == 2
     assert "--batch-size 4" not in script
+
+    key_matrix = Path("scripts/server/run_key_matrix.sh").read_text(encoding="utf-8")
+    assert "--output-length" not in key_matrix
 
 
 def test_container_script_enforces_mount_and_isolation_contract() -> None:
