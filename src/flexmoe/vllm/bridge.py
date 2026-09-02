@@ -165,6 +165,16 @@ def layer_index(layer_name: str) -> int:
     return int(match.group(1))
 
 
+def _canonical_layer_path(name: str) -> str:
+    match = _LAYER_PATTERN.search(name)
+    if match is None:
+        raise IntegrityError(f"cannot parse transformer layer from {name}")
+    start = match.start()
+    if name[start] == ".":
+        start += 1
+    return name[start:]
+
+
 @dataclass(frozen=True)
 class ForwardToken:
     layer_name: str
@@ -375,7 +385,12 @@ class FluxMoERegistry:
             raise IntegrityError(f"{kind} parameter received shard {shard_id}")
         if kind == "w2" and shard_id != "w2":
             raise IntegrityError(f"{kind} parameter received shard {shard_id}")
-        if layer_name not in weight_name:
+        registered_path = _canonical_layer_path(layer_name)
+        loaded_path = _canonical_layer_path(weight_name)
+        if not (
+            loaded_path == registered_path
+            or loaded_path.startswith(f"{registered_path}.")
+        ):
             raise IntegrityError(
                 f"weight name {weight_name} does not belong to {layer_name}"
             )

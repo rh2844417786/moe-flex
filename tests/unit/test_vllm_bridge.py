@@ -211,27 +211,28 @@ def test_complete_loader_builds_host_hierarchy_and_forward_window(
 
     for layer_idx, layer in enumerate(layers):
         base = float(layer_idx * 100)
+        local_layer_name = layer.layer_name.removeprefix("model.")
         w1 = torch.full((2, 4), base + 1, dtype=torch.bfloat16)
         w3 = torch.full((2, 4), base + 3, dtype=torch.bfloat16)
         w2 = torch.full((4, 2), base + 2, dtype=torch.bfloat16)
         store_expert_weight(
             layer.w13_weight,
             w1,
-            layer.layer_name,
+            local_layer_name,
             "w1",
             0,
         )
         store_expert_weight(
             layer.w13_weight,
             w3,
-            layer.layer_name,
+            local_layer_name,
             "w3",
             0,
         )
         store_expert_weight(
             layer.w2_weight,
             w2,
-            layer.layer_name,
+            local_layer_name,
             "w2",
             0,
         )
