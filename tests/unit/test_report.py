@@ -43,6 +43,24 @@ def test_missing_mechanism_evidence_is_inconclusive() -> None:
     assert "mapped_bytes" in classification.reasons
 
 
+def test_gpu_compressed_classification_requires_zero_h2d() -> None:
+    evidence = RunEvidence(
+        output_tokens_per_second=100.0,
+        mapped_bytes=4096,
+        h2d_bytes=0,
+        decompressed_bytes=2048,
+        output_tokens_match=True,
+        router_topk_match=True,
+        weights_bit_exact=True,
+    )
+
+    classification = classify_support(
+        evidence, stressed_delta=0.1, variant="fluxmoe-gpu-compressed"
+    )
+
+    assert classification.status == "SUPPORTED"
+
+
 @pytest.mark.parametrize(
     "field",
     ["output_tokens_match", "router_topk_match", "weights_bit_exact"],
@@ -68,9 +86,7 @@ def test_flat_or_opposite_complete_trend_is_classified() -> None:
     evidence = _complete_evidence()
 
     assert classify_support(evidence, stressed_delta=0.0).status == "MIXED"
-    assert classify_support(evidence, stressed_delta=-0.1).status == (
-        "NOT_SUPPORTED"
-    )
+    assert classify_support(evidence, stressed_delta=-0.1).status == ("NOT_SUPPORTED")
 
 
 def test_invalid_throughput_is_inconclusive() -> None:

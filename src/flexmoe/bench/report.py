@@ -14,7 +14,7 @@ from typing import cast
 
 from flexmoe.config import RunStatus
 from flexmoe.bench.router_trace import router_probes_match
-from flexmoe.bench.evidence import validate_mechanism_counters
+from flexmoe.bench.evidence import evidence_profile, validate_mechanism_counters
 
 
 @dataclass(frozen=True)
@@ -38,14 +38,25 @@ def classify_support(
     evidence: RunEvidence,
     stressed_delta: float | None = None,
     delayed_oom: bool = False,
+    *,
+    variant: str = "fluxmoe-fixed",
 ) -> SupportClassification:
     missing: list[str] = []
     if not isfinite(evidence.output_tokens_per_second) or (
         evidence.output_tokens_per_second <= 0
     ):
         missing.append("output_tokens_per_second")
-    for field_name in ("mapped_bytes", "h2d_bytes", "decompressed_bytes"):
-        if getattr(evidence, field_name) <= 0:
+    profile = evidence_profile(variant)
+    mechanism_fields = {
+        "mapped_bytes": profile.mapped_bytes,
+        "h2d_bytes": profile.runtime_host_expert_h2d_bytes,
+        "decompressed_bytes": profile.gpu_decode_output_bytes,
+    }
+    for field_name, requirement in mechanism_fields.items():
+        value = getattr(evidence, field_name)
+        if requirement == "positive" and value <= 0:
+            missing.append(field_name)
+        elif requirement == "zero" and value != 0:
             missing.append(field_name)
     for field_name in (
         "output_tokens_match",
@@ -153,12 +164,14 @@ def validate_run_directory(run_dir: Path) -> RunEvidence:
         weights_bit_exact=exact_bool("weights_bit_exact"),
     )
     run_config = _json_object(run_dir / "config.json")
+    variant_value = run_config.get("variant", "fluxmoe-fixed")
+    if not isinstance(variant_value, str):
+        raise ValueError("run config variant must be a string")
     if "runtime_host_expert_h2d_bytes" in counters:
-        variant = run_config.get("variant")
-        if not isinstance(variant, str):
+        if "variant" not in run_config:
             raise ValueError("run config has no variant")
         validate_mechanism_counters(
-            variant,
+            variant_value,
             {
                 name: cast(int, value)
                 for name, value in counters.items()
@@ -257,7 +270,9 @@ def validate_run_directory(run_dir: Path) -> RunEvidence:
             raise ValueError("delayed OOM requires delegated correctness evidence")
     else:
         raise TypeError("validated FluxMoE run has no resident reference or OOM")
-    classification = classify_support(evidence, stressed_delta=0.0)
+    classification = classify_support(
+        evidence, stressed_delta=0.0, variant=variant_value
+    )
     if classification.status == "INCONCLUSIVE":
         raise ValueError(
             "run evidence is incomplete: " + ", ".join(classification.reasons)
@@ -282,12 +297,18 @@ def latest_complete_run(root: Path) -> Path:
 def build_report(run_dir: Path, output: Path, figures: Path) -> None:
     evidence = validate_run_directory(run_dir)
     metrics = _json_object(run_dir / "metrics.json")
+    config = _json_object(run_dir / "config.json")
+    variant = config.get("variant", "fluxmoe-fixed")
+    if not isinstance(variant, str):
+        raise ValueError("run config variant must be a string")
     raw_delta = metrics.get("stressed_delta")
     stressed_delta = (
         float(cast(int | float, raw_delta)) if type(raw_delta) in {int, float} else None
     )
     delayed_oom = metrics.get("delayed_oom") is True
-    classification = classify_support(evidence, stressed_delta, delayed_oom)
+    classification = classify_support(
+        evidence, stressed_delta, delayed_oom, variant=variant
+    )
     figures.mkdir(parents=True, exist_ok=True)
     evidence_path = figures / "evidence.json"
     evidence_path.write_text(
