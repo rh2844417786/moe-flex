@@ -1,6 +1,6 @@
 # moe-flex
 
-> 状态：**IMPLEMENTED AND CUDA-COMPILED - H100 VALIDATION PENDING**
+> 状态：**H100 MECHANISM SUPPORTED - PERFORMANCE NOT SUPPORTED**
 
 `moe-flex` 是 FluxMoE 的独立复现工程。代码在 MacBook 上开发并发布到
 GitHub，服务器从公开仓库拉取后，在 4 张独占 NVIDIA H100 80GB PCIe GPU
@@ -19,6 +19,7 @@ GitHub，服务器从公开仓库拉取后，在 4 张独占 NVIDIA H100 80GB PC
 
 - [设计规格](docs/superpowers/specs/2026-09-01-fluxmoe-reproduction-design.md)
 - [实施计划](docs/superpowers/plans/2026-09-01-fluxmoe-reproduction.md)
+- [H100 关键矩阵实验报告](docs/results/h100-key-matrix-report.md)
 
 ## 固定环境
 
@@ -35,8 +36,9 @@ GitHub，服务器从公开仓库拉取后，在 4 张独占 NVIDIA H100 80GB PC
 - 当前可执行对照是 `resident` 与 `fluxmoe-fixed`。`vllm-o`、dynamic、
   unbalanced 和 pagedtensor-resident 仅保留为 `DEV_ONLY` 配置合同，runner 会
   显式拒绝，避免错误标注实验。
-- 尚未执行 H100 CUDA 数值测试、完整 Qwen3-Next parity 或性能矩阵，所以现在
-  仍不能称为论文复现完成。
+- H100 确定性 smoke 与三个关键性能点已完成。专家存储层级、BF16 恢复和 KV cache
+  容量扩展得到支持，但当前实现因重复 H2D 搬运而显著慢于 resident，不能称为完成了
+  论文的性能复现。详细证据和边界见关键矩阵实验报告。
 
 ## Mac 验证
 
