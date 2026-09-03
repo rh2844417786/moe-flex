@@ -22,6 +22,7 @@ import yaml  # type: ignore[import-untyped]
 
 from flexmoe.bench.workload import load_workload
 from flexmoe.bench.router_trace import router_probes_match
+from flexmoe.bench.evidence import validate_mechanism_counters
 from flexmoe.errors import UnsupportedModeError
 from flexmoe.runtime.telemetry import JsonlTelemetry
 
@@ -29,6 +30,7 @@ BenchVariant = Literal[
     "resident",
     "vllm-o",
     "fluxmoe-fixed",
+    "fluxmoe-gpu-compressed",
     "fluxmoe-dynamic",
     "fluxmoe-unbalanced",
     "pagedtensor-resident",
@@ -38,11 +40,12 @@ _VARIANTS = {
     "resident",
     "vllm-o",
     "fluxmoe-fixed",
+    "fluxmoe-gpu-compressed",
     "fluxmoe-dynamic",
     "fluxmoe-unbalanced",
     "pagedtensor-resident",
 }
-_IMPLEMENTED_VARIANTS = {"resident", "fluxmoe-fixed"}
+_IMPLEMENTED_VARIANTS = {"resident", "fluxmoe-fixed", "fluxmoe-gpu-compressed"}
 _MECHANISM_COUNTER_NAMES = (
     "mapped_bytes",
     "mapping_count",
@@ -50,6 +53,15 @@ _MECHANISM_COUNTER_NAMES = (
     "decompressed_bytes",
     "weights_verified",
     "weights_expected",
+    "startup_gpu_store_upload_bytes",
+    "runtime_host_expert_h2d_bytes",
+    "runtime_host_copy_launches",
+    "gpu_decode_input_bytes",
+    "gpu_decode_output_bytes",
+    "gpu_decode_launches",
+    "gpu_compressed_source_bytes",
+    "gpu_compressed_storage_bytes",
+    "expert_source_bytes",
 )
 
 
@@ -76,6 +88,10 @@ class RunConfig:
     host_capacity_bytes: int
     gpu_decode_bytes_per_second: float
     host_h2d_bytes_per_second: float
+    storage_mode: Literal["hybrid", "gpu-compressed"]
+    gpu_materialization_mode: Literal["expertwise", "batched"]
+    minimum_kv_gain_bytes: int
+    gpu_safety_margin_bytes: int
 
 
 def _mapping(path: Path) -> dict[str, object]:
@@ -146,12 +162,18 @@ def load_run_config(path: Path) -> RunConfig:
             data, "gpu_compressed_budget_bytes", minimum=0
         ),
         host_capacity_bytes=_int_field(data, "host_capacity_bytes"),
-        gpu_decode_bytes_per_second=_float_field(
-            data, "gpu_decode_bytes_per_second"
+        gpu_decode_bytes_per_second=_float_field(data, "gpu_decode_bytes_per_second"),
+        host_h2d_bytes_per_second=_float_field(data, "host_h2d_bytes_per_second"),
+        storage_mode=cast(
+            Literal["hybrid", "gpu-compressed"],
+            _string_field(data, "storage_mode"),
         ),
-        host_h2d_bytes_per_second=_float_field(
-            data, "host_h2d_bytes_per_second"
+        gpu_materialization_mode=cast(
+            Literal["expertwise", "batched"],
+            _string_field(data, "gpu_materialization_mode"),
         ),
+        minimum_kv_gain_bytes=_int_field(data, "minimum_kv_gain_bytes", minimum=0),
+        gpu_safety_margin_bytes=_int_field(data, "gpu_safety_margin_bytes", minimum=0),
     )
     if config.schema_version != 1:
         raise ValueError("unsupported benchmark config schema")
@@ -163,11 +185,19 @@ def load_run_config(path: Path) -> RunConfig:
         raise ValueError("formal reproduction requires greedy eager execution")
     if config.warmups != 3 or config.repetitions != 3:
         raise ValueError("formal reproduction requires 3 warmups and 3 repetitions")
-    if (
-        config.gpu_decode_bytes_per_second <= 0
-        or config.host_h2d_bytes_per_second <= 0
-    ):
+    if config.gpu_decode_bytes_per_second <= 0 or config.host_h2d_bytes_per_second <= 0:
         raise ValueError("backend bandwidths must be positive")
+    if config.storage_mode not in {"hybrid", "gpu-compressed"}:
+        raise ValueError("storage_mode must be hybrid or gpu-compressed")
+    if config.gpu_materialization_mode not in {"expertwise", "batched"}:
+        raise ValueError("gpu_materialization_mode must be expertwise or batched")
+    if config.variant == "fluxmoe-gpu-compressed":
+        if config.storage_mode != "gpu-compressed":
+            raise ValueError("fluxmoe-gpu-compressed requires gpu-compressed storage")
+        if config.gpu_materialization_mode != "batched":
+            raise ValueError("fluxmoe-gpu-compressed requires batched materialization")
+    elif config.storage_mode == "gpu-compressed":
+        raise ValueError("gpu-compressed storage requires fluxmoe-gpu-compressed")
     return config
 
 
@@ -178,6 +208,14 @@ def variant_environment(variant: str) -> dict[str, str]:
         "fluxmoe-fixed": {
             "FLUXMOE_ENABLE": "1",
             "FLUXMOE_PLANNER_MODE": "fixed",
+            "FLUXMOE_STORAGE_MODE": "hybrid",
+            "FLUXMOE_GPU_MATERIALIZATION_MODE": "expertwise",
+        },
+        "fluxmoe-gpu-compressed": {
+            "FLUXMOE_ENABLE": "1",
+            "FLUXMOE_PLANNER_MODE": "fixed",
+            "FLUXMOE_STORAGE_MODE": "gpu-compressed",
+            "FLUXMOE_GPU_MATERIALIZATION_MODE": "batched",
         },
         "fluxmoe-dynamic": {
             "FLUXMOE_ENABLE": "1",
@@ -348,9 +386,7 @@ def compare_reference(
     return output_tokens_match, router_topk_match, stressed_delta
 
 
-def validate_resident_oom(
-    config: RunConfig, failure_run: Path, git_sha: str
-) -> Path:
+def validate_resident_oom(config: RunConfig, failure_run: Path, git_sha: str) -> Path:
     failure_path = failure_run.resolve()
     failure = json.loads((failure_path / "error.json").read_text(encoding="utf-8"))
     failure_config = json.loads(
@@ -388,9 +424,12 @@ def _configure_environment(config: RunConfig) -> None:
             "FLUXMOE_GPU_DECODE_BYTES_PER_SECOND": str(
                 config.gpu_decode_bytes_per_second
             ),
-            "FLUXMOE_HOST_H2D_BYTES_PER_SECOND": str(
-                config.host_h2d_bytes_per_second
-            ),
+            "FLUXMOE_HOST_H2D_BYTES_PER_SECOND": str(config.host_h2d_bytes_per_second),
+            "FLUXMOE_STORAGE_MODE": config.storage_mode,
+            "FLUXMOE_GPU_MATERIALIZATION_MODE": config.gpu_materialization_mode,
+            "FLUXMOE_MINIMUM_KV_GAIN_BYTES": str(config.minimum_kv_gain_bytes),
+            "FLUXMOE_GPU_SAFETY_MARGIN_BYTES": str(config.gpu_safety_margin_bytes),
+            "FLUXMOE_GPU_MEMORY_UTILIZATION": str(config.gpu_memory_utilization),
         }
     )
     os.environ.update(values)
@@ -461,7 +500,9 @@ def _execute_vllm(
     )
     sampling = sampling_class(
         temperature=0.0,
+        min_tokens=config.output_length,
         max_tokens=config.output_length,
+        ignore_eos=True,
         seed=config.seed,
     )
     prompts = [
@@ -479,6 +520,13 @@ def _execute_vllm(
         outputs = engine.generate(prompts, sampling, use_tqdm=False)
         elapsed = perf_counter() - started
         token_ids = [list(output.outputs[0].token_ids) for output in outputs]
+        if len(token_ids) != config.batch_size or any(
+            len(tokens) != config.output_length for tokens in token_ids
+        ):
+            raise RuntimeError(
+                "fixed-output protocol requires every request to generate "
+                f"exactly {config.output_length} tokens"
+            )
         generated = sum(len(tokens) for tokens in token_ids)
         if reference_tokens is None:
             reference_tokens = token_ids
@@ -491,6 +539,8 @@ def _execute_vllm(
                 "repetition": repetition,
                 "elapsed_s": elapsed,
                 "generated_tokens": generated,
+                "request_count": len(token_ids),
+                "output_lengths": [len(tokens) for tokens in token_ids],
                 "output_tokens_per_second": generated / elapsed,
                 "output_token_ids": token_ids,
             }
@@ -539,7 +589,10 @@ def run_benchmark(
             f"current checkout has no preflight artifact: {preflight_source}"
         )
     preflight_payload = json.loads(preflight_source.read_text(encoding="utf-8"))
-    if not isinstance(preflight_payload, dict) or preflight_payload.get("ok") is not True:
+    if (
+        not isinstance(preflight_payload, dict)
+        or preflight_payload.get("ok") is not True
+    ):
         raise RuntimeError(f"preflight did not pass: {preflight_source}")
     run_dir = create_run_directory(runs_root, git_sha)
     if result_path_file is not None:
@@ -563,13 +616,19 @@ def run_benchmark(
             "git_sha": git_sha,
             "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES", ""),
             "vllm_disable_custom_all_reduce": True,
+            "process_name": os.environ.get("FLUXMOE_PROCESS_NAME", "wth333"),
         },
     )
     _configure_environment(config)
     os.environ["FLUXMOE_TRACE_ROUTER"] = "1" if correctness_mode else "0"
     os.environ["FLUXMOE_VERIFY_WEIGHTS"] = (
         "1"
-        if correctness_mode and config.variant == "fluxmoe-fixed"
+        if correctness_mode
+        and config.variant
+        in {
+            "fluxmoe-fixed",
+            "fluxmoe-gpu-compressed",
+        }
         else "0"
     )
     router_trace_root = run_dir / "router"
@@ -594,9 +653,7 @@ def run_benchmark(
         },
     )
     try:
-        metrics = _execute_vllm(
-            config, require_stable_output=correctness_mode
-        )
+        metrics = _execute_vllm(config, require_stable_output=correctness_mode)
         raw_counters = metrics.get("mechanism_counters")
         if not isinstance(raw_counters, dict):
             raise TypeError("benchmark mechanism counters are missing")
@@ -620,13 +677,11 @@ def run_benchmark(
         router_topk_match = False
         stressed_delta: float | None = None
         if reference_run is not None:
-            output_tokens_match, router_topk_match, stressed_delta = (
-                compare_reference(
-                    config,
-                    metrics,
-                    router_manifest,
-                    reference_run.resolve(),
-                )
+            output_tokens_match, router_topk_match, stressed_delta = compare_reference(
+                config,
+                metrics,
+                router_manifest,
+                reference_run.resolve(),
             )
             metrics["reference_run"] = str(reference_run.resolve())
             metrics["stressed_delta"] = stressed_delta
@@ -642,15 +697,13 @@ def run_benchmark(
                 raise TypeError("correctness evidence config must be an object")
             for field_name, expected in {
                 "git_sha": git_sha,
-                "variant": "fluxmoe-fixed",
+                "variant": config.variant,
                 "model_path": str(config.model_path),
                 "dataset_sha256": config.dataset_sha256,
                 "tensor_parallel_size": config.tensor_parallel_size,
             }.items():
                 if evidence_config.get(field_name) != expected:
-                    raise ValueError(
-                        f"correctness evidence differs in {field_name}"
-                    )
+                    raise ValueError(f"correctness evidence differs in {field_name}")
             metrics["correctness_evidence"] = str(evidence_path)
             output_tokens_match = delegated_evidence.output_tokens_match
             router_topk_match = delegated_evidence.router_topk_match
@@ -685,18 +738,23 @@ def run_benchmark(
         _write_json(run_dir / "metrics.json", metrics)
         if config.variant == "resident":
             state_status = "BASELINE_COMPLETE"
-        elif (
-            (reference_run is not None or delayed_oom)
-            and output_tokens_match
-            and router_topk_match
-            and weights_bit_exact
-            and counters["mapped_bytes"] > 0
-            and counters["h2d_bytes"] > 0
-            and counters["decompressed_bytes"] > 0
-        ):
-            state_status = "COMPLETE"
         else:
-            state_status = "MEASURED_UNVALIDATED"
+            try:
+                validate_mechanism_counters(config.variant, counters)
+                mechanism_valid = True
+            except ValueError:
+                mechanism_valid = False
+            state_status = (
+                "COMPLETE"
+                if (
+                    (reference_run is not None or delayed_oom)
+                    and output_tokens_match
+                    and router_topk_match
+                    and weights_bit_exact
+                    and mechanism_valid
+                )
+                else "MEASURED_UNVALIDATED"
+            )
         _write_json(
             run_dir / "state.json",
             {"status": state_status, "git_sha": git_sha},

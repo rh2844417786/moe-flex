@@ -19,3 +19,7 @@ gpu_compressed_budget_bytes: 67108864
 host_capacity_bytes: 214748364800
 gpu_decode_bytes_per_second: 100000000000.0
 host_h2d_bytes_per_second: 25000000000.0
+storage_mode: hybrid
+gpu_materialization_mode: expertwise
+minimum_kv_gain_bytes: 1073741824
+gpu_safety_margin_bytes: 536870912

@@ -15,4 +15,20 @@ void huffman_decode_cuda(
     const torch::Tensor& destination, const torch::Tensor& errors,
     std::int64_t chunk_elements, std::uint64_t stream_handle);
 
+void huffman_decode_batched_cuda(
+    const torch::Tensor& sign_mantissa,
+    const torch::Tensor& exponent_payload,
+    const torch::Tensor& chunk_byte_offsets,
+    const torch::Tensor& chunk_bit_lengths,
+    const torch::Tensor& chunk_destination_offsets,
+    const torch::Tensor& chunk_element_counts,
+    const torch::Tensor& chunk_expert_indices,
+    const torch::Tensor& segment_bit_offsets,
+    const torch::Tensor& expert_trie_offsets,
+    const torch::Tensor& expert_trie_node_counts,
+    const torch::Tensor& trie_left, const torch::Tensor& trie_right,
+    const torch::Tensor& trie_symbol, const torch::Tensor& destination,
+    const torch::Tensor& errors, std::int64_t chunk_elements,
+    std::uint64_t stream_handle);
+
 }  // namespace flexmoe

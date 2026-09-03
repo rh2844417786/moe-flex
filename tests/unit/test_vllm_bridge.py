@@ -97,6 +97,15 @@ def test_worker_extension_reads_process_local_registry() -> None:
         "decompressed_bytes": 0,
         "weights_verified": 0,
         "weights_expected": 0,
+        "startup_gpu_store_upload_bytes": 0,
+        "runtime_host_expert_h2d_bytes": 0,
+        "runtime_host_copy_launches": 0,
+        "gpu_decode_input_bytes": 0,
+        "gpu_decode_output_bytes": 0,
+        "gpu_decode_launches": 0,
+        "gpu_compressed_source_bytes": 0,
+        "gpu_compressed_storage_bytes": 0,
+        "expert_source_bytes": 0,
     }
 
 

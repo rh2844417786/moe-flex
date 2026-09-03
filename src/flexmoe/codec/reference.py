@@ -6,9 +6,14 @@ import heapq
 from dataclasses import dataclass
 from math import prod
 
+import numpy as np
+from numpy.typing import NDArray
+
 from flexmoe.errors import ConfigurationError, IntegrityError
 
 CHUNK_ELEMENTS = 4096
+SEGMENT_ELEMENTS = 128
+SEGMENTS_PER_CHUNK = CHUNK_ELEMENTS // SEGMENT_ELEMENTS
 
 
 @dataclass(frozen=True)
@@ -21,6 +26,7 @@ class EncodedBFloat16:
     chunk_elements: int
     chunk_byte_offsets: tuple[int, ...]
     chunk_bit_lengths: tuple[int, ...]
+    segment_bit_offsets: bytes
     sign_mantissa: bytes
     exponent_payload: bytes
     code_lengths: tuple[int, ...]
@@ -34,11 +40,9 @@ class _Node:
     right: _Node | None = None
 
 
-def _code_lengths(symbols: list[int]) -> tuple[int, ...]:
-    frequencies = [0] * 256
-    for symbol in symbols:
-        frequencies[symbol] += 1
-
+def _code_lengths_from_frequencies(frequencies: list[int]) -> tuple[int, ...]:
+    if len(frequencies) != 256 or any(frequency < 0 for frequency in frequencies):
+        raise ConfigurationError("exponent frequencies must contain 256 counts")
     heap: list[tuple[int, int, int, _Node]] = []
     node_id = 0
     for symbol, frequency in enumerate(frequencies):
@@ -86,13 +90,18 @@ def _code_lengths(symbols: list[int]) -> tuple[int, ...]:
     return tuple(lengths)
 
 
+def _code_lengths(symbols: list[int]) -> tuple[int, ...]:
+    frequencies = [0] * 256
+    for symbol in symbols:
+        frequencies[symbol] += 1
+    return _code_lengths_from_frequencies(frequencies)
+
+
 def canonical_codes(code_lengths: tuple[int, ...]) -> dict[int, tuple[int, int]]:
     if len(code_lengths) != 256 or any(length < 0 for length in code_lengths):
         raise IntegrityError("code lengths must contain 256 non-negative values")
     ordered = sorted(
-        (length, symbol)
-        for symbol, length in enumerate(code_lengths)
-        if length > 0
+        (length, symbol) for symbol, length in enumerate(code_lengths) if length > 0
     )
     if not ordered:
         raise IntegrityError("at least one Huffman symbol is required")
@@ -132,6 +141,37 @@ def _encode_chunk(
     return bytes(payload), bit_count
 
 
+def _encode_chunk_numpy(
+    symbols: NDArray[np.uint8],
+    code_values: NDArray[np.uint64],
+    code_lengths: NDArray[np.uint8],
+    scalar_codes: dict[int, tuple[int, int]],
+) -> tuple[bytes, int, bytes]:
+    lengths = code_lengths[symbols]
+    cumulative = np.empty(len(lengths) + 1, dtype=np.uint32)
+    cumulative[0] = 0
+    np.cumsum(lengths, dtype=np.uint32, out=cumulative[1:])
+    segment_positions = np.arange(0, CHUNK_ELEMENTS, SEGMENT_ELEMENTS, dtype=np.int64)
+    clamped_positions = np.minimum(segment_positions, len(lengths))
+    segment_offsets = cumulative[clamped_positions].astype("<u4", copy=False)
+    maximum_length = int(lengths.max())
+    if maximum_length > 63:
+        payload, bit_count = _encode_chunk(symbols.tolist(), scalar_codes)
+        return payload, bit_count, segment_offsets.tobytes()
+    values = code_values[symbols]
+    positions = np.arange(maximum_length, dtype=np.int16)
+    shifts = lengths[:, None].astype(np.int16) - 1 - positions[None, :]
+    valid = shifts >= 0
+    safe_shifts = np.maximum(shifts, 0).astype(np.uint64)
+    bits = ((values[:, None] >> safe_shifts) & 1).astype(np.uint8)[valid]
+    bit_count = int(lengths.sum(dtype=np.uint64))
+    return (
+        np.packbits(bits, bitorder="big").tobytes(),
+        bit_count,
+        segment_offsets.tobytes(),
+    )
+
+
 def encode_bf16_bits(raw: bytes, shape: tuple[int, ...]) -> EncodedBFloat16:
     """Encode little-endian BF16 words without interpreting float values."""
 
@@ -143,27 +183,35 @@ def encode_bf16_bits(raw: bytes, shape: tuple[int, ...]) -> EncodedBFloat16:
     if prod(shape) != element_count:
         raise ConfigurationError("shape does not match element count")
 
-    sign_mantissa = bytearray(element_count)
-    exponents: list[int] = []
-    for index in range(element_count):
-        word = raw[2 * index] | (raw[2 * index + 1] << 8)
-        mantissa = word & 0x7F
-        sign = (word >> 15) & 1
-        sign_mantissa[index] = mantissa | (sign << 7)
-        exponents.append((word >> 7) & 0xFF)
-
-    lengths = _code_lengths(exponents)
+    words = np.frombuffer(raw, dtype="<u2")
+    sign_mantissa = (
+        (words & np.uint16(0x7F)) | ((words >> np.uint16(8)) & np.uint16(0x80))
+    ).astype(np.uint8, copy=False)
+    exponents = ((words >> np.uint16(7)) & np.uint16(0xFF)).astype(np.uint8, copy=False)
+    frequencies = np.bincount(exponents, minlength=256).astype(np.int64, copy=False)
+    lengths = _code_lengths_from_frequencies(frequencies.tolist())
     codes = canonical_codes(lengths)
+    code_values = np.zeros(256, dtype=np.uint64)
+    code_length_table = np.zeros(256, dtype=np.uint8)
+    for symbol, (code, length) in codes.items():
+        if length <= 63:
+            code_values[symbol] = code
+        code_length_table[symbol] = length
     payload = bytearray()
     offsets: list[int] = []
     bit_lengths: list[int] = []
+    segment_bit_offsets = bytearray()
     for start in range(0, element_count, CHUNK_ELEMENTS):
         offsets.append(len(payload))
-        chunk, chunk_bits = _encode_chunk(
-            exponents[start : start + CHUNK_ELEMENTS], codes
+        chunk, chunk_bits, chunk_segments = _encode_chunk_numpy(
+            exponents[start : start + CHUNK_ELEMENTS],
+            code_values,
+            code_length_table,
+            codes,
         )
         payload.extend(chunk)
         bit_lengths.append(chunk_bits)
+        segment_bit_offsets.extend(chunk_segments)
 
     return EncodedBFloat16(
         shape=shape,
@@ -172,7 +220,8 @@ def encode_bf16_bits(raw: bytes, shape: tuple[int, ...]) -> EncodedBFloat16:
         chunk_elements=CHUNK_ELEMENTS,
         chunk_byte_offsets=tuple(offsets),
         chunk_bit_lengths=tuple(bit_lengths),
-        sign_mantissa=bytes(sign_mantissa),
+        segment_bit_offsets=bytes(segment_bit_offsets),
+        sign_mantissa=sign_mantissa.tobytes(),
         exponent_payload=bytes(payload),
         code_lengths=lengths,
     )
@@ -228,13 +277,13 @@ def decode_bf16_bits(encoded: EncodedBFloat16) -> bytes:
         or len(encoded.chunk_bit_lengths) != expected_chunks
     ):
         raise IntegrityError("chunk metadata count mismatch")
+    if len(encoded.segment_bit_offsets) != expected_chunks * SEGMENTS_PER_CHUNK * 4:
+        raise IntegrityError("segment metadata count mismatch")
     if sum(encoded.chunk_bit_lengths) != encoded.bit_count:
         raise IntegrityError("aggregate bit count mismatch")
 
     codes = canonical_codes(encoded.code_lengths)
-    reverse_codes = {
-        (length, code): symbol for symbol, (code, length) in codes.items()
-    }
+    reverse_codes = {(length, code): symbol for symbol, (code, length) in codes.items()}
     maximum_length = max(encoded.code_lengths)
     exponents: list[int] = []
     expected_offset = 0

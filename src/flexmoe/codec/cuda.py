@@ -14,6 +14,7 @@ from numpy.typing import NDArray
 
 from flexmoe.codec.reference import (
     CHUNK_ELEMENTS,
+    SEGMENTS_PER_CHUNK,
     EncodedBFloat16,
     canonical_codes,
 )
@@ -36,6 +37,46 @@ class _NativeCodecModule(Protocol):
         stream_handle: int,
     ) -> None: ...
 
+    def huffman_decode_batched(
+        self,
+        sign_mantissa: torch.Tensor,
+        exponent_payload: torch.Tensor,
+        chunk_byte_offsets: torch.Tensor,
+        chunk_bit_lengths: torch.Tensor,
+        chunk_destination_offsets: torch.Tensor,
+        chunk_element_counts: torch.Tensor,
+        chunk_expert_indices: torch.Tensor,
+        segment_bit_offsets: torch.Tensor,
+        expert_trie_offsets: torch.Tensor,
+        expert_trie_node_counts: torch.Tensor,
+        trie_left: torch.Tensor,
+        trie_right: torch.Tensor,
+        trie_symbol: torch.Tensor,
+        destination: torch.Tensor,
+        errors: torch.Tensor,
+        chunk_elements: int,
+        stream_handle: int,
+    ) -> None: ...
+
+
+class PackedDescriptorLike(Protocol):
+    shape: tuple[int, ...]
+    expert_count: int
+    chunk_elements: int
+    sign_mantissa: bytes
+    exponent_payload: bytes
+    chunk_byte_offsets: tuple[int, ...]
+    chunk_bit_lengths: tuple[int, ...]
+    chunk_destination_offsets: tuple[int, ...]
+    chunk_element_counts: tuple[int, ...]
+    chunk_expert_indices: tuple[int, ...]
+    segment_bit_offsets: bytes
+    trie_left: tuple[int, ...]
+    trie_right: tuple[int, ...]
+    trie_symbol: tuple[int, ...]
+    expert_trie_offsets: tuple[int, ...]
+    expert_trie_node_counts: tuple[int, ...]
+
 
 @lru_cache(maxsize=1)
 def _native_module() -> _NativeCodecModule:
@@ -56,9 +97,7 @@ def _validate_metadata(encoded: EncodedBFloat16) -> int:
     if len(encoded.sign_mantissa) != encoded.element_count:
         raise IntegrityError("sign/mantissa byte count mismatch")
     if encoded.chunk_elements != CHUNK_ELEMENTS:
-        raise IntegrityError(
-            f"CUDA codec requires {CHUNK_ELEMENTS}-element chunks"
-        )
+        raise IntegrityError(f"CUDA codec requires {CHUNK_ELEMENTS}-element chunks")
     expected_chunks = (
         encoded.element_count + encoded.chunk_elements - 1
     ) // encoded.chunk_elements
@@ -67,6 +106,8 @@ def _validate_metadata(encoded: EncodedBFloat16) -> int:
         or len(encoded.chunk_bit_lengths) != expected_chunks
     ):
         raise IntegrityError("chunk metadata count mismatch")
+    if len(encoded.segment_bit_offsets) != expected_chunks * SEGMENTS_PER_CHUNK * 4:
+        raise IntegrityError("segment metadata count mismatch")
     if sum(encoded.chunk_bit_lengths) != encoded.bit_count:
         raise IntegrityError("aggregate bit count mismatch")
     if len(encoded.code_lengths) != 256:
@@ -148,6 +189,24 @@ class CudaEncodedBFloat16:
             raise RuntimeError("CUDA tensor has no device index")
         return index
 
+    @property
+    def input_bytes(self) -> int:
+        return self.sign_mantissa.numel() + self.exponent_payload.numel()
+
+    @property
+    def storage_bytes(self) -> int:
+        tensors = (
+            self.sign_mantissa,
+            self.exponent_payload,
+            self.chunk_byte_offsets,
+            self.chunk_bit_lengths,
+            self.trie_left,
+            self.trie_right,
+            self.trie_symbol,
+            self.errors,
+        )
+        return sum(tensor.numel() * tensor.element_size() for tensor in tensors)
+
     def launch(self, destination: torch.Tensor, stream_handle: int) -> None:
         if destination.device.type != "cuda" or destination.device.index != self.device:
             raise ValueError("destination must be on the encoded CUDA device")
@@ -203,9 +262,9 @@ def prepare_cuda_encoded(
             shape=encoded.shape,
             element_count=encoded.element_count,
             chunk_elements=encoded.chunk_elements,
-            sign_mantissa=torch.from_numpy(
-                _uint8_array(encoded.sign_mantissa)
-            ).to(cuda_device),
+            sign_mantissa=torch.from_numpy(_uint8_array(encoded.sign_mantissa)).to(
+                cuda_device
+            ),
             exponent_payload=torch.from_numpy(
                 _uint8_array(encoded.exponent_payload)
             ).to(cuda_device),
@@ -218,12 +277,205 @@ def prepare_cuda_encoded(
             trie_left=torch.from_numpy(left).to(cuda_device),
             trie_right=torch.from_numpy(right).to(cuda_device),
             trie_symbol=torch.from_numpy(symbols).to(cuda_device),
-            errors=torch.empty(
-                expected_chunks, dtype=torch.int32, device=cuda_device
-            ),
+            errors=torch.empty(expected_chunks, dtype=torch.int32, device=cuda_device),
         )
         torch.cuda.current_stream(device).synchronize()
     return prepared
+
+
+@dataclass
+class CudaPackedLayerDescriptor:
+    shape: tuple[int, ...]
+    expert_count: int
+    chunk_elements: int
+    sign_mantissa: torch.Tensor
+    exponent_payload: torch.Tensor
+    chunk_byte_offsets: torch.Tensor
+    chunk_bit_lengths: torch.Tensor
+    chunk_destination_offsets: torch.Tensor
+    chunk_element_counts: torch.Tensor
+    chunk_expert_indices: torch.Tensor
+    segment_bit_offsets: torch.Tensor
+    expert_trie_offsets: torch.Tensor
+    expert_trie_node_counts: torch.Tensor
+    trie_left: torch.Tensor
+    trie_right: torch.Tensor
+    trie_symbol: torch.Tensor
+    errors: torch.Tensor
+
+    @property
+    def device(self) -> int:
+        index = self.sign_mantissa.device.index
+        if index is None:
+            raise RuntimeError("CUDA tensor has no device index")
+        return index
+
+    @property
+    def input_bytes(self) -> int:
+        return self.sign_mantissa.numel() + self.exponent_payload.numel()
+
+    @property
+    def storage_bytes(self) -> int:
+        tensors = (
+            self.sign_mantissa,
+            self.exponent_payload,
+            self.chunk_byte_offsets,
+            self.chunk_bit_lengths,
+            self.chunk_destination_offsets,
+            self.chunk_element_counts,
+            self.chunk_expert_indices,
+            self.segment_bit_offsets,
+            self.expert_trie_offsets,
+            self.expert_trie_node_counts,
+            self.trie_left,
+            self.trie_right,
+            self.trie_symbol,
+            self.errors,
+        )
+        return sum(tensor.numel() * tensor.element_size() for tensor in tensors)
+
+    def launch(self, destination: torch.Tensor, stream_handle: int) -> None:
+        if destination.device.type != "cuda" or destination.device.index != self.device:
+            raise ValueError("destination must be on the packed CUDA device")
+        if destination.dtype is not torch.bfloat16:
+            raise TypeError("destination must have BF16 dtype")
+        if not destination.is_contiguous():
+            raise ValueError("destination must be contiguous")
+        if tuple(destination.shape) != self.shape:
+            raise ValueError(
+                f"destination shape {tuple(destination.shape)} does not match {self.shape}"
+            )
+        if type(stream_handle) is not int or stream_handle < 0:
+            raise ValueError("stream_handle must be a non-negative int")
+        _native_module().huffman_decode_batched(
+            self.sign_mantissa,
+            self.exponent_payload,
+            self.chunk_byte_offsets,
+            self.chunk_bit_lengths,
+            self.chunk_destination_offsets,
+            self.chunk_element_counts,
+            self.chunk_expert_indices,
+            self.segment_bit_offsets,
+            self.expert_trie_offsets,
+            self.expert_trie_node_counts,
+            self.trie_left,
+            self.trie_right,
+            self.trie_symbol,
+            destination,
+            self.errors,
+            self.chunk_elements,
+            stream_handle,
+        )
+
+    def raise_for_errors(self) -> None:
+        error_values = self.errors.cpu().tolist()
+        failures = [
+            (chunk_idx, error_code)
+            for chunk_idx, error_code in enumerate(error_values)
+            if error_code
+        ]
+        if failures:
+            chunk_idx, error_code = failures[0]
+            raise IntegrityError(
+                f"batched CUDA Huffman decode failed in chunk {chunk_idx} "
+                f"with error code {error_code}"
+            )
+
+
+def prepare_cuda_packed(
+    packed: PackedDescriptorLike, *, device: int
+) -> CudaPackedLayerDescriptor:
+    if type(device) is not int or device < 0:
+        raise ValueError("device must be a non-negative int")
+    chunk_count = len(packed.chunk_byte_offsets)
+    metadata_lengths = {
+        len(packed.chunk_bit_lengths),
+        len(packed.chunk_destination_offsets),
+        len(packed.chunk_element_counts),
+        len(packed.chunk_expert_indices),
+    }
+    if chunk_count <= 0 or metadata_lengths != {chunk_count}:
+        raise IntegrityError("packed chunk metadata count mismatch")
+    if len(packed.segment_bit_offsets) != chunk_count * SEGMENTS_PER_CHUNK * 4:
+        raise IntegrityError("packed segment metadata count mismatch")
+    if (
+        len(packed.expert_trie_offsets) != packed.expert_count
+        or len(packed.expert_trie_node_counts) != packed.expert_count
+    ):
+        raise IntegrityError("packed expert trie metadata count mismatch")
+    if not (len(packed.trie_left) == len(packed.trie_right) == len(packed.trie_symbol)):
+        raise IntegrityError("packed trie metadata count mismatch")
+    cuda_device = torch.device("cuda", device)
+    with torch.cuda.device(cuda_device):
+        prepared = CudaPackedLayerDescriptor(
+            shape=packed.shape,
+            expert_count=packed.expert_count,
+            chunk_elements=packed.chunk_elements,
+            sign_mantissa=torch.from_numpy(_uint8_array(packed.sign_mantissa)).to(
+                cuda_device
+            ),
+            exponent_payload=torch.from_numpy(_uint8_array(packed.exponent_payload)).to(
+                cuda_device
+            ),
+            chunk_byte_offsets=torch.tensor(
+                packed.chunk_byte_offsets, dtype=torch.int64, device=cuda_device
+            ),
+            chunk_bit_lengths=torch.tensor(
+                packed.chunk_bit_lengths, dtype=torch.int64, device=cuda_device
+            ),
+            chunk_destination_offsets=torch.tensor(
+                packed.chunk_destination_offsets,
+                dtype=torch.int64,
+                device=cuda_device,
+            ),
+            chunk_element_counts=torch.tensor(
+                packed.chunk_element_counts, dtype=torch.int64, device=cuda_device
+            ),
+            chunk_expert_indices=torch.tensor(
+                packed.chunk_expert_indices, dtype=torch.int64, device=cuda_device
+            ),
+            segment_bit_offsets=torch.from_numpy(
+                np.frombuffer(packed.segment_bit_offsets, dtype="<i4").copy()
+            ).to(cuda_device),
+            expert_trie_offsets=torch.tensor(
+                packed.expert_trie_offsets, dtype=torch.int64, device=cuda_device
+            ),
+            expert_trie_node_counts=torch.tensor(
+                packed.expert_trie_node_counts, dtype=torch.int64, device=cuda_device
+            ),
+            trie_left=torch.tensor(
+                packed.trie_left, dtype=torch.int16, device=cuda_device
+            ),
+            trie_right=torch.tensor(
+                packed.trie_right, dtype=torch.int16, device=cuda_device
+            ),
+            trie_symbol=torch.tensor(
+                packed.trie_symbol, dtype=torch.int16, device=cuda_device
+            ),
+            errors=torch.empty(chunk_count, dtype=torch.int32, device=cuda_device),
+        )
+        torch.cuda.current_stream(device).synchronize()
+    return prepared
+
+
+def cuda_decode_packed(
+    packed: PackedDescriptorLike,
+    *,
+    device: int,
+    destination: torch.Tensor | None = None,
+) -> torch.Tensor:
+    prepared = prepare_cuda_packed(packed, device=device)
+    if destination is None:
+        destination = torch.empty(
+            packed.shape,
+            dtype=torch.bfloat16,
+            device=torch.device("cuda", device),
+        )
+    stream = torch.cuda.current_stream(device)
+    prepared.launch(destination, stream.cuda_stream)
+    stream.synchronize()
+    prepared.raise_for_errors()
+    return destination
 
 
 def cuda_decode(
@@ -250,7 +502,10 @@ def cuda_decode(
 
 __all__ = [
     "CudaEncodedBFloat16",
+    "CudaPackedLayerDescriptor",
     "build_decode_trie",
     "cuda_decode",
+    "cuda_decode_packed",
     "prepare_cuda_encoded",
+    "prepare_cuda_packed",
 ]

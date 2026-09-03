@@ -46,6 +46,20 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
              pybind11::arg("destination"), pybind11::arg("errors"),
              pybind11::arg("chunk_elements"),
              pybind11::arg("stream_handle"));
+  module.def(
+      "huffman_decode_batched", &flexmoe::huffman_decode_batched_cuda,
+      pybind11::arg("sign_mantissa"), pybind11::arg("exponent_payload"),
+      pybind11::arg("chunk_byte_offsets"),
+      pybind11::arg("chunk_bit_lengths"),
+      pybind11::arg("chunk_destination_offsets"),
+      pybind11::arg("chunk_element_counts"),
+      pybind11::arg("chunk_expert_indices"),
+      pybind11::arg("segment_bit_offsets"),
+      pybind11::arg("expert_trie_offsets"),
+      pybind11::arg("expert_trie_node_counts"), pybind11::arg("trie_left"),
+      pybind11::arg("trie_right"), pybind11::arg("trie_symbol"),
+      pybind11::arg("destination"), pybind11::arg("errors"),
+      pybind11::arg("chunk_elements"), pybind11::arg("stream_handle"));
   pybind11::class_<flexmoe::PagedRegion,
                    std::shared_ptr<flexmoe::PagedRegion>>(module,
                                                           "PagedRegion")

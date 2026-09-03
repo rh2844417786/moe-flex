@@ -6,7 +6,8 @@ import numpy as np
 import pytest
 import torch
 
-from flexmoe.codec.cuda import cuda_decode
+from flexmoe.codec.cuda import cuda_decode, cuda_decode_packed
+from flexmoe.codec.packed import pack_layer_descriptor
 from flexmoe.codec.reference import encode_bf16_bits
 from flexmoe.errors import IntegrityError
 
@@ -30,9 +31,12 @@ def test_cuda_decode_matches_reference_for_all_bf16_patterns() -> None:
 
 def test_cuda_decode_writes_exact_mapped_destination() -> None:
     _require_cuda()
-    raw = np.random.default_rng(9).integers(
-        0, 65_536, 8192, dtype=np.uint16
-    ).astype("<u2", copy=False).tobytes()
+    raw = (
+        np.random.default_rng(9)
+        .integers(0, 65_536, 8192, dtype=np.uint16)
+        .astype("<u2", copy=False)
+        .tobytes()
+    )
     encoded = encode_bf16_bits(raw, (128, 64))
     destination = torch.empty((128, 64), dtype=torch.bfloat16, device="cuda:0")
 
@@ -50,3 +54,22 @@ def test_cuda_decode_rejects_inconsistent_code_table() -> None:
 
     with pytest.raises(IntegrityError, match="Huffman symbol"):
         cuda_decode(invalid, device=0)
+
+
+def test_batched_cuda_decode_matches_independent_expert_streams() -> None:
+    _require_cuda()
+    raw_experts = [
+        np.random.default_rng(seed)
+        .integers(0, 65_536, 5000, dtype=np.uint16)
+        .astype("<u2", copy=False)
+        .tobytes()
+        for seed in (31, 32, 33)
+    ]
+    encoded = {
+        index: encode_bf16_bits(raw, (5000,)) for index, raw in enumerate(raw_experts)
+    }
+    packed = pack_layer_descriptor(encoded, destination_shape=(3, 5000))
+
+    decoded = cuda_decode_packed(packed, device=0)
+
+    assert decoded.view(torch.int16).cpu().numpy().tobytes() == b"".join(raw_experts)

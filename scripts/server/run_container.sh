@@ -50,6 +50,8 @@ if [[ "${GIT_SHA}" != "${git_sha}" ]]; then
   exit 10
 fi
 image="${IMAGE}"
+process_name="wth333"
+container_name="wth333-moe-flex-${git_sha:0:12}-$$"
 image_revision="$(docker image inspect "${image}" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
 if [[ "${image_revision}" != "${git_sha}" ]]; then
   echo "build and verify ${image} with scripts/server/build.sh first" >&2
@@ -73,6 +75,7 @@ nccl_nvls_enable="${NCCL_NVLS_ENABLE:-0}"
 # Docker CLI 29 parses an unquoted comma-separated device list as both a count
 # and DeviceIDs. Preserve the inner quotes as part of the argument.
 exec docker run --rm \
+  --name "${container_name}" \
   --entrypoint "" \
   --gpus "\"device=${GPU_IDS}\"" \
   --ipc=host \
@@ -84,6 +87,7 @@ exec docker run --rm \
   --env "CUDA_VISIBLE_DEVICES=${container_gpu_ids}" \
   --env "HOST_GPU_IDS=${GPU_IDS}" \
   --env "FLEXMOE_PROJECT_ROOT=${expected_root}" \
+  --env "FLUXMOE_PROCESS_NAME=${process_name}" \
   --env "NCCL_SOCKET_IFNAME=${nccl_socket_ifname}" \
   --env "NCCL_P2P_LEVEL=${nccl_p2p_level}" \
   --env "NCCL_NVLS_ENABLE=${nccl_nvls_enable}" \

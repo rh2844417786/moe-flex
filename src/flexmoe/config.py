@@ -11,6 +11,7 @@ Variant = Literal[
     "vllm-resident",
     "vllm-o",
     "fluxmoe-fixed",
+    "fluxmoe-gpu-compressed",
     "fluxmoe-dynamic",
     "fluxmoe-dynamic-unbalanced",
     "pagedtensor-resident",

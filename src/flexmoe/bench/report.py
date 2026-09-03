@@ -14,6 +14,7 @@ from typing import cast
 
 from flexmoe.config import RunStatus
 from flexmoe.bench.router_trace import router_probes_match
+from flexmoe.bench.evidence import validate_mechanism_counters
 
 
 @dataclass(frozen=True)
@@ -151,6 +152,19 @@ def validate_run_directory(run_dir: Path) -> RunEvidence:
         router_topk_match=exact_bool("router_topk_match"),
         weights_bit_exact=exact_bool("weights_bit_exact"),
     )
+    run_config = _json_object(run_dir / "config.json")
+    if "runtime_host_expert_h2d_bytes" in counters:
+        variant = run_config.get("variant")
+        if not isinstance(variant, str):
+            raise ValueError("run config has no variant")
+        validate_mechanism_counters(
+            variant,
+            {
+                name: cast(int, value)
+                for name, value in counters.items()
+                if type(value) is int
+            },
+        )
     delegated_value = metrics.get("correctness_evidence")
     delegated = isinstance(delegated_value, str)
     if delegated:
@@ -164,10 +178,11 @@ def validate_run_directory(run_dir: Path) -> RunEvidence:
             and delegated_evidence.weights_bit_exact
         ):
             raise ValueError("delegated correctness evidence is incomplete")
-        current_config = _json_object(run_dir / "config.json")
+        current_config = run_config
         delegated_config = _json_object(delegated_path / "config.json")
         for field_name in (
             "git_sha",
+            "variant",
             "model_path",
             "dataset_sha256",
             "tensor_parallel_size",
@@ -200,9 +215,8 @@ def validate_run_directory(run_dir: Path) -> RunEvidence:
                 raise ValueError(f"router trace line count mismatch: {trace_path}")
             probe_line_count = entry.get("probe_line_count")
             lines = payload.splitlines(keepends=True)
-            if (
-                type(probe_line_count) is not int
-                or not 0 < probe_line_count <= len(lines)
+            if type(probe_line_count) is not int or not 0 < probe_line_count <= len(
+                lines
             ):
                 raise ValueError(f"invalid router probe line count: {trace_path}")
             probe_payload = b"".join(lines[:probe_line_count])
@@ -270,9 +284,7 @@ def build_report(run_dir: Path, output: Path, figures: Path) -> None:
     metrics = _json_object(run_dir / "metrics.json")
     raw_delta = metrics.get("stressed_delta")
     stressed_delta = (
-        float(cast(int | float, raw_delta))
-        if type(raw_delta) in {int, float}
-        else None
+        float(cast(int | float, raw_delta)) if type(raw_delta) in {int, float} else None
     )
     delayed_oom = metrics.get("delayed_oom") is True
     classification = classify_support(evidence, stressed_delta, delayed_oom)

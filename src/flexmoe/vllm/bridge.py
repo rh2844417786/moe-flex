@@ -11,11 +11,12 @@ from hashlib import sha256
 from math import prod
 from pathlib import Path
 from threading import Lock
-from typing import Protocol
+from typing import Literal, Protocol, cast
 
 import torch
 
-from flexmoe.codec.reference import encode_bf16_bits
+from flexmoe.codec.packed import pack_layer_descriptor
+from flexmoe.codec.reference import EncodedBFloat16, encode_bf16_bits
 from flexmoe.errors import ConfigurationError, IntegrityError, UnsupportedModeError
 from flexmoe.paged_tensor import PagedTensorRegion
 from flexmoe.placement import (
@@ -26,7 +27,10 @@ from flexmoe.placement import (
 )
 from flexmoe.runtime.lifecycle import LayerLifecycle, LayerMaterializer
 from flexmoe.storage.base import ExpertTensorStore, MaterializationReceipt
-from flexmoe.storage.gpu_compressed import GpuCompressedStore
+from flexmoe.storage.gpu_compressed import (
+    BatchedGpuCompressedStore,
+    GpuCompressedStore,
+)
 from flexmoe.storage.hierarchy import StorageHierarchy
 from flexmoe.storage.host_pinned import PinnedHostStore
 from flexmoe.vllm.loader import ExpertLoadAccumulator, ExpertWeights
@@ -187,6 +191,10 @@ class RegistryStorageConfig:
     host_capacity_bytes: int
     gpu_decode_bytes_per_second: float
     host_h2d_bytes_per_second: float
+    storage_mode: Literal["hybrid", "gpu-compressed"] = "hybrid"
+    gpu_materialization_mode: Literal["expertwise", "batched"] = "expertwise"
+    minimum_kv_gain_bytes: int = 0
+    gpu_safety_margin_bytes: int = 0
 
     def __post_init__(self) -> None:
         if self.gpu_compressed_budget_bytes < 0:
@@ -197,6 +205,16 @@ class RegistryStorageConfig:
             raise ConfigurationError("GPU decode bandwidth must be positive")
         if self.host_h2d_bytes_per_second <= 0:
             raise ConfigurationError("host HtoD bandwidth must be positive")
+        if self.storage_mode not in {"hybrid", "gpu-compressed"}:
+            raise ConfigurationError("unsupported storage mode")
+        if self.gpu_materialization_mode not in {"expertwise", "batched"}:
+            raise ConfigurationError("unsupported GPU materialization mode")
+        if self.storage_mode == "gpu-compressed" and (
+            self.gpu_materialization_mode != "batched"
+        ):
+            raise ConfigurationError("GPU-compressed storage requires batched decode")
+        if self.minimum_kv_gain_bytes < 0 or self.gpu_safety_margin_bytes < 0:
+            raise ConfigurationError("GPU admission margins must be non-negative")
 
 
 def _tensor_id(layer_idx: int, expert_idx: int, kind: TensorKind) -> str:
@@ -223,7 +241,8 @@ class _LayerKindMaterializer(LayerMaterializer):
         num_experts: int,
         device: int,
         pool: _TensorPool,
-        hierarchy: StorageHierarchy,
+        hierarchy: StorageHierarchy | None,
+        batched_store: BatchedGpuCompressedStore | None = None,
         expected_layer_hashes: Mapping[int, str],
         verify_weights: bool,
     ) -> None:
@@ -232,6 +251,7 @@ class _LayerKindMaterializer(LayerMaterializer):
         self._device = device
         self._pool = pool
         self._hierarchy = hierarchy
+        self._batched_store = batched_store
         self._expected_layer_hashes = dict(expected_layer_hashes)
         self._verify_weights = verify_weights
         self._verified_layers: set[int] = set()
@@ -243,24 +263,34 @@ class _LayerKindMaterializer(LayerMaterializer):
 
     def materialize(self, layer_idx: int, load_stream: int) -> None:
         self._pool.map_layer(layer_idx)
-        destinations = {
-            _tensor_id(layer_idx, expert_idx, self._kind): self._pool.destination(
-                layer_idx, expert_idx
+        if self._batched_store is not None:
+            layer_kind = f"layer.{layer_idx}.{self._kind}"
+            receipts = (
+                self._batched_store.materialize_batched(
+                    layer_kind,
+                    self._pool.parameters[layer_idx],
+                    load_stream,
+                ),
             )
-            for expert_idx in range(self._num_experts)
-        }
-        receipts = self._hierarchy.materialize_layer(
-            layer_idx, destinations, stream=load_stream
-        )
+        else:
+            if self._hierarchy is None:
+                raise IntegrityError("expertwise materializer has no hierarchy")
+            destinations = {
+                _tensor_id(layer_idx, expert_idx, self._kind): self._pool.destination(
+                    layer_idx, expert_idx
+                )
+                for expert_idx in range(self._num_experts)
+            }
+            receipts = self._hierarchy.materialize_layer(
+                layer_idx, destinations, stream=load_stream
+            )
         verified_layer: int | None = None
         if self._verify_weights and layer_idx not in self._verified_layers:
             external_stream = torch.cuda.ExternalStream(  # type: ignore[no-untyped-call]
                 load_stream, device=self._device
             )
             external_stream.synchronize()
-            actual = sha256(
-                _tensor_bytes(self._pool.parameters[layer_idx])
-            ).hexdigest()
+            actual = sha256(_tensor_bytes(self._pool.parameters[layer_idx])).hexdigest()
             expected = self._expected_layer_hashes[layer_idx]
             if actual != expected:
                 raise IntegrityError(
@@ -320,6 +350,11 @@ class FluxMoERegistry:
         self._materializers: dict[TensorKind, _LayerKindMaterializer] = {}
         self._ready = False
         self._finalized_expert_count = 0
+        self._expert_source_bytes = 0
+        self._gpu_compressed_source_bytes = 0
+        self._gpu_compressed_storage_bytes = 0
+        self._startup_gpu_store_upload_bytes = 0
+        self._gpu_decode_input_bytes_by_id: dict[str, int] = {}
         self._lock = Lock()
 
     def _pool(
@@ -355,7 +390,9 @@ class FluxMoERegistry:
             )
         with self._lock:
             if self._loading_layers is not None:
-                raise IntegrityError("cannot register layers after weight loading starts")
+                raise IntegrityError(
+                    "cannot register layers after weight loading starts"
+                )
             if layer_idx in self._layer_names:
                 raise IntegrityError(f"duplicate routed-expert layer {layer_idx}")
             w13 = self._pool("w13", w13_shape, dtype).create_parameter(layer_idx)
@@ -451,25 +488,29 @@ class FluxMoERegistry:
                 )
 
         config = self._storage_config
-        placements = assign_tensors(
-            tuple(specs),
-            (
-                BackendProfile(
-                    name="gpu_compressed",
-                    bytes_per_second=config.gpu_decode_bytes_per_second,
-                    capacity_bytes=config.gpu_compressed_budget_bytes,
+        self._expert_source_bytes = sum(spec.nbytes for spec in specs)
+        if config.storage_mode == "gpu-compressed":
+            placement_by_id = {spec.tensor_id: "gpu_compressed" for spec in specs}
+        else:
+            placements = assign_tensors(
+                tuple(specs),
+                (
+                    BackendProfile(
+                        name="gpu_compressed",
+                        bytes_per_second=config.gpu_decode_bytes_per_second,
+                        capacity_bytes=config.gpu_compressed_budget_bytes,
+                    ),
+                    BackendProfile(
+                        name="host_pinned",
+                        bytes_per_second=config.host_h2d_bytes_per_second,
+                        capacity_bytes=config.host_capacity_bytes,
+                    ),
                 ),
-                BackendProfile(
-                    name="host_pinned",
-                    bytes_per_second=config.host_h2d_bytes_per_second,
-                    capacity_bytes=config.host_capacity_bytes,
-                ),
-            ),
-            gpu_budget_bytes=config.gpu_compressed_budget_bytes,
-        )
-        placement_by_id = {
-            placement.tensor_id: placement for placement in placements
-        }
+                gpu_budget_bytes=config.gpu_compressed_budget_bytes,
+            )
+            placement_by_id = {
+                placement.tensor_id: placement.backend for placement in placements
+            }
         verify_weights = os.environ.get("FLUXMOE_VERIFY_WEIGHTS") == "1"
         expected_layer_hashes: dict[TensorKind, dict[int, str]] = {
             "w13": {},
@@ -482,52 +523,101 @@ class FluxMoERegistry:
                     for expert_idx in range(self.num_experts):
                         digest.update(
                             _tensor_bytes(
-                                raw_tensors[
-                                    _tensor_id(layer_idx, expert_idx, kind)
-                                ]
+                                raw_tensors[_tensor_id(layer_idx, expert_idx, kind)]
                             )
                         )
                     expected_layer_hashes[kind][layer_idx] = digest.hexdigest()
-        gpu_inputs = {
+        gpu_inputs: dict[str, EncodedBFloat16] = {
             tensor_id: encode_bf16_bits(
                 _tensor_bytes(tensor),
                 tuple(tensor.shape),
             )
             for tensor_id, tensor in raw_tensors.items()
-            if placement_by_id[tensor_id].backend == "gpu_compressed"
+            if placement_by_id[tensor_id] == "gpu_compressed"
         }
         host_inputs = {
             tensor_id: tensor
             for tensor_id, tensor in raw_tensors.items()
-            if placement_by_id[tensor_id].backend == "host_pinned"
+            if placement_by_id[tensor_id] == "host_pinned"
         }
-        gpu_store = (
-            GpuCompressedStore(gpu_inputs, device=self.device) if gpu_inputs else None
-        )
+        gpu_store: GpuCompressedStore | None = None
+        batched_store: BatchedGpuCompressedStore | None = None
+        if config.storage_mode == "gpu-compressed":
+            descriptors = {}
+            for kind in kinds:
+                for layer_idx in range(self.total_layers):
+                    descriptors[f"layer.{layer_idx}.{kind}"] = pack_layer_descriptor(
+                        {
+                            expert_idx: gpu_inputs[
+                                _tensor_id(layer_idx, expert_idx, kind)
+                            ]
+                            for expert_idx in range(self.num_experts)
+                        },
+                        destination_shape=tuple(
+                            self._pools[kind].parameters[layer_idx].shape
+                        ),
+                    )
+            required_storage = sum(
+                descriptor.gpu_storage_bytes for descriptor in descriptors.values()
+            )
+            free_bytes, total_bytes = torch.cuda.mem_get_info(self.device)
+            configured_limit = int(
+                total_bytes
+                * float(os.environ.get("FLUXMOE_GPU_MEMORY_UTILIZATION", "1.0"))
+            )
+            current_used = total_bytes - free_bytes
+            required_with_margin = required_storage + config.gpu_safety_margin_bytes
+            if required_with_margin > free_bytes:
+                raise ConfigurationError(
+                    "GPU compressed store fails physical admission"
+                )
+            if current_used + required_with_margin > configured_limit:
+                raise ConfigurationError(
+                    "GPU compressed store fails configured admission"
+                )
+            batched_store = BatchedGpuCompressedStore(descriptors, device=self.device)
+            self._gpu_compressed_source_bytes = batched_store.source_bytes
+            self._gpu_compressed_storage_bytes = batched_store.storage_bytes
+            self._startup_gpu_store_upload_bytes = batched_store.storage_bytes
+            self._gpu_decode_input_bytes_by_id = {
+                layer_kind: batched_store.input_bytes(layer_kind)
+                for layer_kind in descriptors
+            }
+        elif gpu_inputs:
+            gpu_store = GpuCompressedStore(gpu_inputs, device=self.device)
+            self._gpu_compressed_source_bytes = gpu_store.source_bytes
+            self._gpu_compressed_storage_bytes = gpu_store.storage_bytes
+            self._startup_gpu_store_upload_bytes = gpu_store.storage_bytes
+            self._gpu_decode_input_bytes_by_id = {
+                tensor_id: gpu_store.input_bytes(tensor_id) for tensor_id in gpu_inputs
+            }
         host_store = PinnedHostStore(host_inputs) if host_inputs else None
         stores: dict[str, ExpertTensorStore] = {}
-        for tensor_id in raw_tensors:
-            if placement_by_id[tensor_id].backend == "gpu_compressed":
-                if gpu_store is None:
-                    raise IntegrityError("GPU placement has no compressed store")
-                stores[tensor_id] = gpu_store
-            else:
-                if host_store is None:
-                    raise IntegrityError("host placement has no pinned store")
-                stores[tensor_id] = host_store
+        if batched_store is None:
+            for tensor_id in raw_tensors:
+                if placement_by_id[tensor_id] == "gpu_compressed":
+                    if gpu_store is None:
+                        raise IntegrityError("GPU placement has no compressed store")
+                    stores[tensor_id] = gpu_store
+                else:
+                    if host_store is None:
+                        raise IntegrityError("host placement has no pinned store")
+                    stores[tensor_id] = host_store
 
         materializers: dict[str, LayerMaterializer] = {}
         for kind in kinds:
             kind_ids = {
-                tensor_id
-                for tensor_id in raw_tensors
-                if tensor_id.endswith(f".{kind}")
+                tensor_id for tensor_id in raw_tensors if tensor_id.endswith(f".{kind}")
             }
-            hierarchy = StorageHierarchy(
-                stores={tensor_id: stores[tensor_id] for tensor_id in kind_ids},
-                tensor_layers={
-                    tensor_id: tensor_layers[tensor_id] for tensor_id in kind_ids
-                },
+            hierarchy = (
+                StorageHierarchy(
+                    stores={tensor_id: stores[tensor_id] for tensor_id in kind_ids},
+                    tensor_layers={
+                        tensor_id: tensor_layers[tensor_id] for tensor_id in kind_ids
+                    },
+                )
+                if batched_store is None
+                else None
             )
             materializer = _LayerKindMaterializer(
                 kind=kind,
@@ -535,6 +625,7 @@ class FluxMoERegistry:
                 device=self.device,
                 pool=self._pools[kind],
                 hierarchy=hierarchy,
+                batched_store=batched_store,
                 expected_layer_hashes=expected_layer_hashes[kind],
                 verify_weights=verify_weights,
             )
@@ -600,21 +691,39 @@ class FluxMoERegistry:
             verified, expected = materializer.verification_counts()
             weights_verified += verified
             weights_expected += expected
+        runtime_host_h2d = sum(
+            receipt.nbytes for receipt in receipts if receipt.backend == "host_pinned"
+        )
+        gpu_decode_output = sum(
+            receipt.nbytes
+            for receipt in receipts
+            if receipt.backend == "gpu_compressed"
+        )
+        gpu_decode_input = sum(
+            self._gpu_decode_input_bytes_by_id.get(receipt.tensor_id, 0)
+            for receipt in receipts
+            if receipt.backend == "gpu_compressed"
+        )
         return {
             "mapped_bytes": mapped_bytes,
             "mapping_count": mapping_count,
-            "h2d_bytes": sum(
-                receipt.nbytes
-                for receipt in receipts
-                if receipt.backend == "host_pinned"
-            ),
-            "decompressed_bytes": sum(
-                receipt.nbytes
-                for receipt in receipts
-                if receipt.backend == "gpu_compressed"
-            ),
+            "h2d_bytes": runtime_host_h2d,
+            "decompressed_bytes": gpu_decode_output,
             "weights_verified": weights_verified,
             "weights_expected": weights_expected,
+            "startup_gpu_store_upload_bytes": self._startup_gpu_store_upload_bytes,
+            "runtime_host_expert_h2d_bytes": runtime_host_h2d,
+            "runtime_host_copy_launches": sum(
+                1 for receipt in receipts if receipt.backend == "host_pinned"
+            ),
+            "gpu_decode_input_bytes": gpu_decode_input,
+            "gpu_decode_output_bytes": gpu_decode_output,
+            "gpu_decode_launches": sum(
+                1 for receipt in receipts if receipt.backend == "gpu_compressed"
+            ),
+            "gpu_compressed_source_bytes": self._gpu_compressed_source_bytes,
+            "gpu_compressed_storage_bytes": self._gpu_compressed_storage_bytes,
+            "expert_source_bytes": self._expert_source_bytes,
         }
 
     def close(self) -> None:
@@ -650,9 +759,7 @@ def record_router_ids(layer_name: str, topk_ids: torch.Tensor) -> None:
             raise IntegrityError(f"invalid RANK value {rank_value}") from error
     normalized = topk_ids.detach().to(device="cpu", dtype=torch.int64)
     normalized = normalized.sort(dim=1).values.contiguous()
-    digest = sha256(
-        normalized.numpy().astype("<i8", copy=False).tobytes()
-    ).hexdigest()
+    digest = sha256(normalized.numpy().astype("<i8", copy=False).tobytes()).hexdigest()
     root = Path(trace_root)
     root.mkdir(parents=True, exist_ok=True)
     with _ROUTER_TRACE_LOCK:
@@ -750,6 +857,12 @@ def _required_env_float(name: str) -> float:
 
 
 def _storage_config_from_env() -> RegistryStorageConfig:
+    storage_mode = os.environ.get("FLUXMOE_STORAGE_MODE")
+    materialization_mode = os.environ.get("FLUXMOE_GPU_MATERIALIZATION_MODE")
+    if storage_mode not in {"hybrid", "gpu-compressed"}:
+        raise ConfigurationError("FLUXMOE_STORAGE_MODE is invalid")
+    if materialization_mode not in {"expertwise", "batched"}:
+        raise ConfigurationError("FLUXMOE_GPU_MATERIALIZATION_MODE is invalid")
     return RegistryStorageConfig(
         gpu_compressed_budget_bytes=_required_env_int(
             "FLUXMOE_GPU_COMPRESSED_BUDGET_BYTES", allow_zero=True
@@ -760,6 +873,16 @@ def _storage_config_from_env() -> RegistryStorageConfig:
         ),
         host_h2d_bytes_per_second=_required_env_float(
             "FLUXMOE_HOST_H2D_BYTES_PER_SECOND"
+        ),
+        storage_mode=cast(Literal["hybrid", "gpu-compressed"], storage_mode),
+        gpu_materialization_mode=cast(
+            Literal["expertwise", "batched"], materialization_mode
+        ),
+        minimum_kv_gain_bytes=_required_env_int(
+            "FLUXMOE_MINIMUM_KV_GAIN_BYTES", allow_zero=True
+        ),
+        gpu_safety_margin_bytes=_required_env_int(
+            "FLUXMOE_GPU_SAFETY_MARGIN_BYTES", allow_zero=True
         ),
     )
 

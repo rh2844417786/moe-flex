@@ -41,6 +41,10 @@ gpu_compressed_budget_bytes: 67108864
 host_capacity_bytes: 214748364800
 gpu_decode_bytes_per_second: 100000000000.0
 host_h2d_bytes_per_second: 25000000000.0
+storage_mode: hybrid
+gpu_materialization_mode: expertwise
+minimum_kv_gain_bytes: 1073741824
+gpu_safety_margin_bytes: 536870912
 """.strip()
         + "\n",
         encoding="utf-8",
@@ -69,6 +73,14 @@ def test_variant_environment_is_explicit_and_fail_closed() -> None:
     assert variant_environment("fluxmoe-fixed") == {
         "FLUXMOE_ENABLE": "1",
         "FLUXMOE_PLANNER_MODE": "fixed",
+        "FLUXMOE_STORAGE_MODE": "hybrid",
+        "FLUXMOE_GPU_MATERIALIZATION_MODE": "expertwise",
+    }
+    assert variant_environment("fluxmoe-gpu-compressed") == {
+        "FLUXMOE_ENABLE": "1",
+        "FLUXMOE_PLANNER_MODE": "fixed",
+        "FLUXMOE_STORAGE_MODE": "gpu-compressed",
+        "FLUXMOE_GPU_MATERIALIZATION_MODE": "batched",
     }
     with pytest.raises(ValueError, match="unsupported benchmark variant"):
         variant_environment("unknown")
@@ -99,6 +111,10 @@ def test_reference_comparison_checks_tokens_router_and_delta(tmp_path: Path) -> 
         host_capacity_bytes=100,
         gpu_decode_bytes_per_second=2.0,
         host_h2d_bytes_per_second=1.0,
+        storage_mode="hybrid",
+        gpu_materialization_mode="expertwise",
+        minimum_kv_gain_bytes=0,
+        gpu_safety_margin_bytes=0,
     )
     reference_config = {
         "variant": "resident",
@@ -182,6 +198,10 @@ def test_reference_comparison_records_performance_token_mismatch(
         host_capacity_bytes=100,
         gpu_decode_bytes_per_second=2.0,
         host_h2d_bytes_per_second=1.0,
+        storage_mode="hybrid",
+        gpu_materialization_mode="expertwise",
+        minimum_kv_gain_bytes=0,
+        gpu_safety_margin_bytes=0,
     )
     (reference / "config.json").write_text(
         json.dumps(
@@ -211,9 +231,7 @@ def test_reference_comparison_records_performance_token_mismatch(
         encoding="utf-8",
     )
     current: dict[str, object] = {
-        "repetitions": [
-            {"output_tokens_per_second": 10.0, "output_token_ids": [[2]]}
-        ]
+        "repetitions": [{"output_tokens_per_second": 10.0, "output_token_ids": [[2]]}]
     }
 
     tokens_match, _, _ = compare_reference(config, current, {}, reference)
@@ -235,6 +253,15 @@ def test_worker_mechanism_counters_are_aggregated_across_tp_ranks() -> None:
         "decompressed_bytes": 30,
         "weights_verified": 48,
         "weights_expected": 48,
+        "startup_gpu_store_upload_bytes": 40,
+        "runtime_host_expert_h2d_bytes": 20,
+        "runtime_host_copy_launches": 4,
+        "gpu_decode_input_bytes": 5,
+        "gpu_decode_output_bytes": 30,
+        "gpu_decode_launches": 6,
+        "gpu_compressed_source_bytes": 30,
+        "gpu_compressed_storage_bytes": 10,
+        "expert_source_bytes": 50,
     }
 
     totals = _aggregate_worker_counters(
@@ -248,6 +275,15 @@ def test_worker_mechanism_counters_are_aggregated_across_tp_ranks() -> None:
         "decompressed_bytes": 120,
         "weights_verified": 192,
         "weights_expected": 192,
+        "startup_gpu_store_upload_bytes": 160,
+        "runtime_host_expert_h2d_bytes": 80,
+        "runtime_host_copy_launches": 16,
+        "gpu_decode_input_bytes": 20,
+        "gpu_decode_output_bytes": 120,
+        "gpu_decode_launches": 24,
+        "gpu_compressed_source_bytes": 120,
+        "gpu_compressed_storage_bytes": 40,
+        "expert_source_bytes": 200,
     }
 
 
@@ -259,6 +295,15 @@ def test_worker_mechanism_counters_fail_closed() -> None:
         "decompressed_bytes": 30,
         "weights_verified": 48,
         "weights_expected": 48,
+        "startup_gpu_store_upload_bytes": 40,
+        "runtime_host_expert_h2d_bytes": 20,
+        "runtime_host_copy_launches": 4,
+        "gpu_decode_input_bytes": 5,
+        "gpu_decode_output_bytes": 30,
+        "gpu_decode_launches": 6,
+        "gpu_compressed_source_bytes": 30,
+        "gpu_compressed_storage_bytes": 10,
+        "expert_source_bytes": 50,
     }
 
     with pytest.raises(RuntimeError, match="expected 4"):

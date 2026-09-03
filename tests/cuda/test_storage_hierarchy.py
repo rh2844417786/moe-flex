@@ -5,7 +5,11 @@ import pytest
 import torch
 
 from flexmoe.codec.reference import encode_bf16_bits
-from flexmoe.storage.gpu_compressed import GpuCompressedStore
+from flexmoe.codec.packed import pack_layer_descriptor
+from flexmoe.storage.gpu_compressed import (
+    BatchedGpuCompressedStore,
+    GpuCompressedStore,
+)
 from flexmoe.storage.hierarchy import StorageHierarchy
 from flexmoe.storage.host_pinned import PinnedHostStore
 
@@ -24,9 +28,7 @@ def test_host_store_owns_pinned_source_and_copies_non_blocking() -> None:
     destination = torch.empty_like(source, device="cuda:0")
     stream = torch.cuda.Stream(device=0)
 
-    receipt = store.materialize(
-        "layer.0.w2", destination, stream.cuda_stream
-    )
+    receipt = store.materialize("layer.0.w2", destination, stream.cuda_stream)
     stream.synchronize()
 
     assert store.source("layer.0.w2").is_pinned()
@@ -37,9 +39,11 @@ def test_host_store_owns_pinned_source_and_copies_non_blocking() -> None:
 
 def test_hierarchy_materializes_both_backends_on_one_load_stream() -> None:
     _require_cuda()
-    words = np.random.default_rng(13).integers(
-        0, 65_536, 4096, dtype=np.uint16
-    ).astype("<u2", copy=False)
+    words = (
+        np.random.default_rng(13)
+        .integers(0, 65_536, 4096, dtype=np.uint16)
+        .astype("<u2", copy=False)
+    )
     encoded = encode_bf16_bits(words.tobytes(), (4096,))
     host_source = torch.arange(2048, dtype=torch.float32).to(torch.bfloat16)
     gpu_store = GpuCompressedStore({"layer.0.w13": encoded}, device=0)
@@ -54,9 +58,7 @@ def test_hierarchy_materializes_both_backends_on_one_load_stream() -> None:
     }
     stream = torch.cuda.Stream(device=0)
 
-    receipts = hierarchy.materialize_layer(
-        0, destinations, stream=stream.cuda_stream
-    )
+    receipts = hierarchy.materialize_layer(0, destinations, stream=stream.cuda_stream)
     stream.synchronize()
     gpu_store.raise_for_decode_errors("layer.0.w13")
 
@@ -69,3 +71,35 @@ def test_hierarchy_materializes_both_backends_on_one_load_stream() -> None:
         == words.tobytes()
     )
     assert torch.equal(destinations["layer.0.w2"].cpu(), host_source)
+
+
+def test_batched_gpu_store_uses_one_layer_kind_launch() -> None:
+    _require_cuda()
+    raw_experts = [
+        np.random.default_rng(seed)
+        .integers(0, 65_536, 5000, dtype=np.uint16)
+        .astype("<u2", copy=False)
+        .tobytes()
+        for seed in (41, 42)
+    ]
+    packed = pack_layer_descriptor(
+        {
+            expert: encode_bf16_bits(raw, (5000,))
+            for expert, raw in enumerate(raw_experts)
+        },
+        destination_shape=(2, 5000),
+    )
+    store = BatchedGpuCompressedStore({"layer.0.w13": packed}, device=0)
+    destination = torch.empty((2, 5000), dtype=torch.bfloat16, device="cuda:0")
+    stream = torch.cuda.Stream(device=0)
+
+    receipt = store.materialize_batched("layer.0.w13", destination, stream.cuda_stream)
+    stream.synchronize()
+    store.raise_for_decode_errors("layer.0.w13")
+
+    assert receipt.nbytes == 20_000
+    assert store.source_bytes == 20_000
+    assert store.storage_bytes >= store.input_bytes("layer.0.w13")
+    assert destination.view(torch.int16).cpu().numpy().tobytes() == b"".join(
+        raw_experts
+    )

@@ -33,10 +33,13 @@ def test_container_script_enforces_mount_and_isolation_contract() -> None:
     assert "src=/mnt/public_data,dst=/mnt/public_data,readonly" in script
     assert "--ipc=host" in script
     assert "--entrypoint" in script
-    assert 'NCCL_SOCKET_IFNAME=${nccl_socket_ifname}' in script
-    assert 'NCCL_P2P_LEVEL=${nccl_p2p_level}' in script
-    assert 'NCCL_NVLS_ENABLE=${nccl_nvls_enable}' in script
-    assert "wth333" not in script
+    assert "NCCL_SOCKET_IFNAME=${nccl_socket_ifname}" in script
+    assert "NCCL_P2P_LEVEL=${nccl_p2p_level}" in script
+    assert "NCCL_NVLS_ENABLE=${nccl_nvls_enable}" in script
+    assert 'process_name="wth333"' in script
+    assert 'container_name="wth333-moe-flex-${git_sha:0:12}-$$"' in script
+    assert "FLUXMOE_PROCESS_NAME=${process_name}" in script
+    assert "exec -a" not in script
 
 
 def test_image_build_uses_docker_hub_base_and_local_sha_tag() -> None:
