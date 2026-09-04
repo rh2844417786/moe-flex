@@ -106,6 +106,8 @@ def test_worker_extension_reads_process_local_registry() -> None:
         "gpu_compressed_source_bytes": 0,
         "gpu_compressed_storage_bytes": 0,
         "expert_source_bytes": 0,
+        "routed_layer_loads": 0,
+        "routed_expert_loads": 0,
     }
 
 
@@ -173,6 +175,9 @@ class _FakePinnedStore:
 
 class _FakeStream:
     cuda_stream = 77
+
+    def synchronize(self) -> None:
+        return None
 
 
 class _FakeLifecycle:
@@ -279,3 +284,88 @@ def test_complete_loader_builds_host_hierarchy_and_forward_window(
         layers[0].w13_weight[0, :2],
         torch.full((2, 4), 1, dtype=torch.bfloat16),
     )
+
+
+def test_routed_loader_materializes_only_selected_experts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FLUXMOE_ENABLE", "1")
+    monkeypatch.setattr(bridge_module, "PinnedHostStore", _FakePinnedStore)
+    monkeypatch.setattr(
+        bridge_module.torch.cuda, "current_stream", lambda _: _FakeStream()
+    )
+    registry = FluxMoERegistry(
+        total_layers=2,
+        device=0,
+        tp_rank=0,
+        tp_size=1,
+        num_experts=3,
+        region_factory=_FakeRegion,
+        storage_config=RegistryStorageConfig(
+            gpu_compressed_budget_bytes=0,
+            host_capacity_bytes=1 << 20,
+            gpu_decode_bytes_per_second=10.0,
+            host_h2d_bytes_per_second=1.0,
+            routed_experts=True,
+        ),
+    )
+    install_registry(registry)
+    layers = [_Layer(0), _Layer(1)]
+    for layer in layers:
+        assert maybe_create_weights(
+            layer=layer,
+            num_experts=3,
+            hidden_size=4,
+            intermediate_size_per_partition=2,
+            params_dtype=torch.bfloat16,
+        )
+
+    for layer_idx, layer in enumerate(layers):
+        local_layer_name = layer.layer_name.removeprefix("model.")
+        for expert_idx in range(3):
+            value = float(layer_idx * 100 + expert_idx * 10)
+            store_expert_weight(
+                layer.w13_weight,
+                torch.full((2, 4), value + 1, dtype=torch.bfloat16),
+                local_layer_name,
+                "w1",
+                expert_idx,
+            )
+            store_expert_weight(
+                layer.w13_weight,
+                torch.full((2, 4), value + 3, dtype=torch.bfloat16),
+                local_layer_name,
+                "w3",
+                expert_idx,
+            )
+            store_expert_weight(
+                layer.w2_weight,
+                torch.full((4, 2), value + 2, dtype=torch.bfloat16),
+                local_layer_name,
+                "w2",
+                expert_idx,
+            )
+
+    assert registry.receipts() == ()
+    token = registry.before_forward(
+        layers[0].layer_name, layers[0].w13_weight, layers[0].w2_weight
+    )
+    registry.prepare_routed_experts(
+        layers[0].layer_name,
+        layers[0].w13_weight,
+        layers[0].w2_weight,
+        torch.tensor([[2, 0], [2, 2]], dtype=torch.int32),
+    )
+    registry.after_forward(token)
+
+    receipt_ids = {receipt.tensor_id for receipt in registry.receipts()}
+    assert receipt_ids == {
+        "layer.0.expert.0.w13",
+        "layer.0.expert.0.w2",
+        "layer.0.expert.2.w13",
+        "layer.0.expert.2.w2",
+    }
+    counters = registry.mechanism_counters()
+    assert counters["runtime_host_copy_launches"] == 4
+    assert counters["routed_layer_loads"] == 2
+    assert counters["routed_expert_loads"] == 4

@@ -8,10 +8,10 @@ def test_vllm_lock_is_exact() -> None:
     assert lock == {
         "commit": "01efc7ef781391e744ed08c3292817a773d654e6",
         "patch_sha256": (
-            "0a706dba0b462539e3de39276e93a63f93a14ec8fc0ea8638b1b430fba2eb0d6"
+            "25117a022aa4acd5f68b9931830ee58aa4b5033c1925c88b0a3a90551190a0df"
         ),
         "patched_layer_sha256": (
-            "a79ba498cabc41bc03ca4f2e51b92d54422aa39de1f53032e88e13a012bbcbcd"
+            "6d4eb22d5d4e61464ce21bb31637c5293561dc7fa73d06e5b8e5cb9291a7ceb4"
         ),
         "repository": "https://github.com/vllm-project/vllm.git",
         "tag": "v0.10.2",

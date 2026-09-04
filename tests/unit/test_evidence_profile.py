@@ -16,6 +16,8 @@ def _counters() -> dict[str, int]:
         "gpu_compressed_source_bytes": 1,
         "gpu_compressed_storage_bytes": 1,
         "startup_gpu_store_upload_bytes": 1,
+        "routed_layer_loads": 0,
+        "routed_expert_loads": 0,
     }
 
 
@@ -59,3 +61,24 @@ def test_host_offload_requires_host_copies_and_rejects_compression() -> None:
         ValueError, match="requires gpu_compressed_storage_bytes=0"
     ):
         validate_mechanism_counters("fluxmoe-host-offload", counters)
+
+
+def test_routed_host_offload_requires_routed_load_evidence() -> None:
+    counters = _counters()
+    for name in (
+        "gpu_decode_input_bytes",
+        "gpu_decode_output_bytes",
+        "gpu_decode_launches",
+        "gpu_compressed_source_bytes",
+        "gpu_compressed_storage_bytes",
+        "startup_gpu_store_upload_bytes",
+    ):
+        counters[name] = 0
+    counters["routed_layer_loads"] = 2
+    counters["routed_expert_loads"] = 7
+
+    validate_mechanism_counters("fluxmoe-routed-host-offload", counters)
+
+    counters["routed_expert_loads"] = 0
+    with pytest.raises(ValueError, match="requires routed_expert_loads>0"):
+        validate_mechanism_counters("fluxmoe-routed-host-offload", counters)

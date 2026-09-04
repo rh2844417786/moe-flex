@@ -12,6 +12,7 @@ Variant = Literal[
     "vllm-o",
     "fluxmoe-fixed",
     "fluxmoe-host-offload",
+    "fluxmoe-routed-host-offload",
     "fluxmoe-gpu-compressed",
     "fluxmoe-dynamic",
     "fluxmoe-dynamic-unbalanced",

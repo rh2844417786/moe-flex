@@ -57,8 +57,41 @@ class StorageHierarchy:
                 f"expected {sorted(expected)}, got {sorted(destinations)}"
             )
 
+        return self._materialize(destinations, stream=stream)
+
+    def materialize_tensors(
+        self,
+        layer_idx: int,
+        destinations: Mapping[str, torch.Tensor],
+        *,
+        stream: int,
+    ) -> tuple[MaterializationReceipt, ...]:
+        """Materialize a non-empty subset of tensors assigned to one layer."""
+
+        if type(layer_idx) is not int or layer_idx < 0:
+            raise ValueError("layer_idx must be a non-negative int")
+        if type(stream) is not int or stream < 0:
+            raise ValueError("stream must be a non-negative int handle")
+        requested = set(destinations)
+        if not requested:
+            raise IntegrityError("at least one expert tensor must be requested")
+        invalid = {
+            tensor_id
+            for tensor_id in requested
+            if self._tensor_layers.get(tensor_id) != layer_idx
+        }
+        if invalid:
+            raise IntegrityError(
+                "requested tensor IDs are not assigned to the layer: "
+                f"{sorted(invalid)}"
+            )
+        return self._materialize(destinations, stream=stream)
+
+    def _materialize(
+        self, destinations: Mapping[str, torch.Tensor], *, stream: int
+    ) -> tuple[MaterializationReceipt, ...]:
         receipts: list[MaterializationReceipt] = []
-        for tensor_id in sorted(expected):
+        for tensor_id in sorted(destinations):
             destination = destinations[tensor_id]
             if not isinstance(destination, torch.Tensor):
                 raise TypeError(f"destination {tensor_id} must be a torch.Tensor")

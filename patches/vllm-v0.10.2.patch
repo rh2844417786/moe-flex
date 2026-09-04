@@ -16,7 +16,11 @@ index a90a711..8bf67e0 100644
 +                    params_dtype=params_dtype,
 +                    **extra_weight_attrs):
 +                return
-@@ -484,0 +497,3 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
+@@ -484,0 +497,7 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
++        if os.environ.get("FLUXMOE_ROUTED_EXPERTS") == "1":
++            from flexmoe.vllm.bridge import prepare_routed_experts
++            prepare_routed_experts(layer.layer_name, layer.w13_weight,
++                                   layer.w2_weight, topk_ids)
 +        if os.environ.get("FLUXMOE_TRACE_ROUTER") == "1":
 +            from flexmoe.vllm.bridge import record_router_ids
 +            record_router_ids(layer.layer_name, topk_ids)

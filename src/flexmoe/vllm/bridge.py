@@ -158,6 +158,10 @@ class _TensorPool:
         with self._mapping_lock:
             return self._mapped_bytes_total, self._mapping_count
 
+    def is_mapped(self, layer_idx: int) -> bool:
+        with self._mapping_lock:
+            return layer_idx in self._mapped_blocks
+
 
 _LAYER_PATTERN = re.compile(r"(?:^|\.)layers\.(\d+)(?:\.|$)")
 
@@ -195,6 +199,7 @@ class RegistryStorageConfig:
     gpu_materialization_mode: Literal["expertwise", "batched"] = "expertwise"
     minimum_kv_gain_bytes: int = 0
     gpu_safety_margin_bytes: int = 0
+    routed_experts: bool = False
 
     def __post_init__(self) -> None:
         if self.gpu_compressed_budget_bytes < 0:
@@ -215,6 +220,14 @@ class RegistryStorageConfig:
             raise ConfigurationError("GPU-compressed storage requires batched decode")
         if self.minimum_kv_gain_bytes < 0 or self.gpu_safety_margin_bytes < 0:
             raise ConfigurationError("GPU admission margins must be non-negative")
+        if self.routed_experts and (
+            self.storage_mode != "hybrid"
+            or self.gpu_materialization_mode != "expertwise"
+            or self.gpu_compressed_budget_bytes != 0
+        ):
+            raise ConfigurationError(
+                "routed experts require uncompressed hybrid expertwise storage"
+            )
 
 
 def _tensor_id(layer_idx: int, expert_idx: int, kind: TensorKind) -> str:
@@ -244,7 +257,9 @@ class _LayerKindMaterializer(LayerMaterializer):
         hierarchy: StorageHierarchy | None,
         batched_store: BatchedGpuCompressedStore | None = None,
         expected_layer_hashes: Mapping[int, str],
+        expected_expert_hashes: Mapping[tuple[int, int], str],
         verify_weights: bool,
+        routed_experts: bool,
     ) -> None:
         self._kind = kind
         self._num_experts = num_experts
@@ -253,15 +268,27 @@ class _LayerKindMaterializer(LayerMaterializer):
         self._hierarchy = hierarchy
         self._batched_store = batched_store
         self._expected_layer_hashes = dict(expected_layer_hashes)
+        self._expected_expert_hashes = dict(expected_expert_hashes)
         self._verify_weights = verify_weights
+        self._routed_experts = routed_experts
         self._verified_layers: set[int] = set()
+        self._expected_routed_experts: set[tuple[int, int]] = set()
+        self._verified_routed_experts: set[tuple[int, int]] = set()
+        self._routed_layer_loads = 0
+        self._routed_expert_loads = 0
         self._receipts: list[MaterializationReceipt] = []
         self._lock = Lock()
 
     def evict(self, layer_idx: int) -> None:
         self._pool.unmap_layer(layer_idx)
 
+    def evict_if_mapped(self, layer_idx: int) -> None:
+        if self._pool.is_mapped(layer_idx):
+            self._pool.unmap_layer(layer_idx)
+
     def materialize(self, layer_idx: int, load_stream: int) -> None:
+        if self._routed_experts:
+            raise IntegrityError("routed materializer requires selected expert IDs")
         self._pool.map_layer(layer_idx)
         if self._batched_store is not None:
             layer_kind = f"layer.{layer_idx}.{self._kind}"
@@ -303,13 +330,77 @@ class _LayerKindMaterializer(LayerMaterializer):
                 self._verified_layers.add(verified_layer)
             self._receipts.extend(receipts)
 
+    def materialize_selected(
+        self, layer_idx: int, expert_ids: tuple[int, ...], load_stream: int
+    ) -> None:
+        if not self._routed_experts:
+            raise IntegrityError("selected materialization requires routed mode")
+        if self._batched_store is not None or self._hierarchy is None:
+            raise IntegrityError("routed materialization requires host hierarchy")
+        if not expert_ids:
+            raise IntegrityError("routed materialization requires expert IDs")
+        if tuple(sorted(set(expert_ids))) != expert_ids:
+            raise IntegrityError("routed expert IDs must be sorted and unique")
+        if expert_ids[0] < 0 or expert_ids[-1] >= self._num_experts:
+            raise IntegrityError("routed expert ID is outside the local tensor")
+
+        self._pool.map_layer(layer_idx)
+        destinations = {
+            _tensor_id(layer_idx, expert_idx, self._kind): self._pool.destination(
+                layer_idx, expert_idx
+            )
+            for expert_idx in expert_ids
+        }
+        receipts = self._hierarchy.materialize_tensors(
+            layer_idx, destinations, stream=load_stream
+        )
+        verified: set[tuple[int, int]] = set()
+        expected = {(layer_idx, expert_idx) for expert_idx in expert_ids}
+        if self._verify_weights:
+            external_stream = torch.cuda.ExternalStream(  # type: ignore[no-untyped-call]
+                load_stream, device=self._device
+            )
+            external_stream.synchronize()
+            for expert_idx in expert_ids:
+                key = (layer_idx, expert_idx)
+                if key in self._verified_routed_experts:
+                    continue
+                actual = sha256(
+                    _tensor_bytes(self._pool.destination(layer_idx, expert_idx))
+                ).hexdigest()
+                expected_digest = self._expected_expert_hashes[key]
+                if actual != expected_digest:
+                    raise IntegrityError(
+                        "materialized BF16 bits differ for routed expert "
+                        f"{layer_idx}/{expert_idx} {self._kind}: "
+                        f"expected {expected_digest}, got {actual}"
+                    )
+                verified.add(key)
+        with self._lock:
+            self._expected_routed_experts.update(expected)
+            self._verified_routed_experts.update(verified)
+            self._routed_layer_loads += 1
+            self._routed_expert_loads += len(expert_ids)
+            self._receipts.extend(receipts)
+
     def receipts(self) -> tuple[MaterializationReceipt, ...]:
         with self._lock:
             return tuple(self._receipts)
 
     def verification_counts(self) -> tuple[int, int]:
         with self._lock:
+            if self._routed_experts:
+                if not self._verify_weights:
+                    return 0, 0
+                return (
+                    len(self._verified_routed_experts),
+                    len(self._expected_routed_experts),
+                )
             return len(self._verified_layers), len(self._expected_layer_hashes)
+
+    def routed_load_counts(self) -> tuple[int, int]:
+        with self._lock:
+            return self._routed_layer_loads, self._routed_expert_loads
 
 
 class FluxMoERegistry:
@@ -355,6 +446,8 @@ class FluxMoERegistry:
         self._gpu_compressed_storage_bytes = 0
         self._startup_gpu_store_upload_bytes = 0
         self._gpu_decode_input_bytes_by_id: dict[str, int] = {}
+        self._routed_active: ForwardToken | None = None
+        self._routed_prepared = False
         self._lock = Lock()
 
     def _pool(
@@ -516,17 +609,32 @@ class FluxMoERegistry:
             "w13": {},
             "w2": {},
         }
+        expected_expert_hashes: dict[
+            TensorKind, dict[tuple[int, int], str]
+        ] = {"w13": {}, "w2": {}}
         if verify_weights:
             for kind in kinds:
-                for layer_idx in range(self.total_layers):
-                    digest = sha256()
-                    for expert_idx in range(self.num_experts):
-                        digest.update(
-                            _tensor_bytes(
-                                raw_tensors[_tensor_id(layer_idx, expert_idx, kind)]
+                if config.routed_experts:
+                    for layer_idx in range(self.total_layers):
+                        for expert_idx in range(self.num_experts):
+                            tensor = raw_tensors[
+                                _tensor_id(layer_idx, expert_idx, kind)
+                            ]
+                            expected_expert_hashes[kind][layer_idx, expert_idx] = (
+                                sha256(_tensor_bytes(tensor)).hexdigest()
                             )
-                        )
-                    expected_layer_hashes[kind][layer_idx] = digest.hexdigest()
+                else:
+                    for layer_idx in range(self.total_layers):
+                        digest = sha256()
+                        for expert_idx in range(self.num_experts):
+                            digest.update(
+                                _tensor_bytes(
+                                    raw_tensors[
+                                        _tensor_id(layer_idx, expert_idx, kind)
+                                    ]
+                                )
+                            )
+                        expected_layer_hashes[kind][layer_idx] = digest.hexdigest()
         gpu_inputs: dict[str, EncodedBFloat16] = {
             tensor_id: encode_bf16_bits(
                 _tensor_bytes(tensor),
@@ -627,17 +735,20 @@ class FluxMoERegistry:
                 hierarchy=hierarchy,
                 batched_store=batched_store,
                 expected_layer_hashes=expected_layer_hashes[kind],
+                expected_expert_hashes=expected_expert_hashes[kind],
                 verify_weights=verify_weights,
+                routed_experts=config.routed_experts,
             )
             self._materializers[kind] = materializer
             materializers[kind] = materializer
-        self._lifecycle = LayerLifecycle(
-            device=self.device,
-            total_layers=self.total_layers,
-            materializers=materializers,
-        )
-        self._lifecycle.schedule_next(0)
-        self._lifecycle.schedule_next(1)
+        if not config.routed_experts:
+            self._lifecycle = LayerLifecycle(
+                device=self.device,
+                total_layers=self.total_layers,
+                materializers=materializers,
+            )
+            self._lifecycle.schedule_next(0)
+            self._lifecycle.schedule_next(1)
         self._finalized_expert_count = len(self._completed)
         self._completed.clear()
         self._ready = True
@@ -656,17 +767,92 @@ class FluxMoERegistry:
             raise IntegrityError("w13 pointer does not match the paged registry")
         if w2.data_ptr() != expected_w2.data_ptr():
             raise IntegrityError("w2 pointer does not match the paged registry")
-        if not self._ready or self._lifecycle is None:
+        if not self._ready:
             raise IntegrityError("FluxMoE storage hierarchy is not finalized")
+        token = ForwardToken(layer_name=layer_name, layer_idx=layer_idx)
+        if self._storage_config is not None and self._storage_config.routed_experts:
+            with self._lock:
+                if self._routed_active is not None:
+                    raise IntegrityError("a routed expert forward is already active")
+                self._routed_active = token
+                self._routed_prepared = False
+            return token
+        if self._lifecycle is None:
+            raise IntegrityError("FluxMoE layer lifecycle is unavailable")
         stream = torch.cuda.current_stream(self.device)
         self._lifecycle.ensure_ready(layer_idx, stream)
-        return ForwardToken(layer_name=layer_name, layer_idx=layer_idx)
+        return token
+
+    def prepare_routed_experts(
+        self,
+        layer_name: str,
+        w13: torch.Tensor,
+        w2: torch.Tensor,
+        topk_ids: torch.Tensor,
+    ) -> None:
+        if self._storage_config is None or not self._storage_config.routed_experts:
+            raise IntegrityError("routed expert preparation is not enabled")
+        layer_idx = layer_index(layer_name)
+        with self._lock:
+            active = self._routed_active
+            if active != ForwardToken(layer_name=layer_name, layer_idx=layer_idx):
+                raise IntegrityError("routed expert preparation has no matching forward")
+            if self._routed_prepared:
+                raise IntegrityError("routed experts were prepared twice")
+        if w13.data_ptr() != self._pools["w13"].parameters[layer_idx].data_ptr():
+            raise IntegrityError("routed w13 pointer does not match the registry")
+        if w2.data_ptr() != self._pools["w2"].parameters[layer_idx].data_ptr():
+            raise IntegrityError("routed w2 pointer does not match the registry")
+        if topk_ids.ndim != 2 or topk_ids.numel() == 0:
+            raise IntegrityError("router Top-k IDs must be a non-empty matrix")
+        expert_ids = tuple(
+            sorted(
+                int(value)
+                for value in torch.unique(topk_ids.detach()).to(device="cpu").tolist()
+            )
+        )
+        if not expert_ids or expert_ids[0] < 0 or expert_ids[-1] >= self.num_experts:
+            raise IntegrityError("router selected an invalid expert ID")
+
+        stream = torch.cuda.current_stream(self.device)
+        stream_handle = stream.cuda_stream
+        if type(stream_handle) is not int or stream_handle < 0:
+            raise IntegrityError("current CUDA stream has an invalid handle")
+        try:
+            for kind in ("w13", "w2"):
+                self._materializers[cast(TensorKind, kind)].materialize_selected(
+                    layer_idx, expert_ids, stream_handle
+                )
+        except Exception:
+            stream.synchronize()
+            for materializer in self._materializers.values():
+                materializer.evict_if_mapped(layer_idx)
+            raise
+        with self._lock:
+            self._routed_prepared = True
 
     def after_forward(self, token: ForwardToken) -> None:
-        if not self._ready or self._lifecycle is None:
+        if not self._ready:
             raise IntegrityError("FluxMoE storage hierarchy is not finalized")
         if self._layer_names.get(token.layer_idx) != token.layer_name:
             raise IntegrityError("forward token does not match the registered layer")
+        if self._storage_config is not None and self._storage_config.routed_experts:
+            with self._lock:
+                if self._routed_active != token:
+                    raise IntegrityError("routed forward token is not active")
+                prepared = self._routed_prepared
+            try:
+                if prepared:
+                    torch.cuda.current_stream(self.device).synchronize()
+            finally:
+                for materializer in self._materializers.values():
+                    materializer.evict_if_mapped(token.layer_idx)
+                with self._lock:
+                    self._routed_active = None
+                    self._routed_prepared = False
+            return
+        if self._lifecycle is None:
+            raise IntegrityError("FluxMoE layer lifecycle is unavailable")
         stream = torch.cuda.current_stream(self.device)
         self._lifecycle.mark_consumed(token.layer_idx, stream)
         self._lifecycle.schedule_next((token.layer_idx + 2) % self.total_layers)
@@ -691,6 +877,12 @@ class FluxMoERegistry:
             verified, expected = materializer.verification_counts()
             weights_verified += verified
             weights_expected += expected
+        routed_layer_loads = 0
+        routed_expert_loads = 0
+        for materializer in self._materializers.values():
+            layer_loads, expert_loads = materializer.routed_load_counts()
+            routed_layer_loads += layer_loads
+            routed_expert_loads += expert_loads
         runtime_host_h2d = sum(
             receipt.nbytes for receipt in receipts if receipt.backend == "host_pinned"
         )
@@ -724,6 +916,8 @@ class FluxMoERegistry:
             "gpu_compressed_source_bytes": self._gpu_compressed_source_bytes,
             "gpu_compressed_storage_bytes": self._gpu_compressed_storage_bytes,
             "expert_source_bytes": self._expert_source_bytes,
+            "routed_layer_loads": routed_layer_loads,
+            "routed_expert_loads": routed_expert_loads,
         }
 
     def close(self) -> None:
@@ -863,6 +1057,9 @@ def _storage_config_from_env() -> RegistryStorageConfig:
         raise ConfigurationError("FLUXMOE_STORAGE_MODE is invalid")
     if materialization_mode not in {"expertwise", "batched"}:
         raise ConfigurationError("FLUXMOE_GPU_MATERIALIZATION_MODE is invalid")
+    routed_value = os.environ.get("FLUXMOE_ROUTED_EXPERTS", "0")
+    if routed_value not in {"0", "1"}:
+        raise ConfigurationError("FLUXMOE_ROUTED_EXPERTS must be 0 or 1")
     return RegistryStorageConfig(
         gpu_compressed_budget_bytes=_required_env_int(
             "FLUXMOE_GPU_COMPRESSED_BUDGET_BYTES", allow_zero=True
@@ -884,6 +1081,7 @@ def _storage_config_from_env() -> RegistryStorageConfig:
         gpu_safety_margin_bytes=_required_env_int(
             "FLUXMOE_GPU_SAFETY_MARGIN_BYTES", allow_zero=True
         ),
+        routed_experts=routed_value == "1",
     )
 
 
@@ -966,6 +1164,17 @@ def before_forward(
     return require_active_registry().before_forward(layer_name, w13, w2)
 
 
+def prepare_routed_experts(
+    layer_name: str,
+    w13: torch.Tensor,
+    w2: torch.Tensor,
+    topk_ids: torch.Tensor,
+) -> None:
+    require_active_registry().prepare_routed_experts(
+        layer_name, w13, w2, topk_ids
+    )
+
+
 def after_forward(token: ForwardToken) -> None:
     require_active_registry().after_forward(token)
 
@@ -980,6 +1189,7 @@ __all__ = [
     "install_registry",
     "layer_index",
     "maybe_create_weights",
+    "prepare_routed_experts",
     "record_router_ids",
     "require_active_registry",
     "reset_registry",

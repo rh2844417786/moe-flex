@@ -82,6 +82,13 @@ def test_variant_environment_is_explicit_and_fail_closed() -> None:
         "FLUXMOE_STORAGE_MODE": "hybrid",
         "FLUXMOE_GPU_MATERIALIZATION_MODE": "expertwise",
     }
+    assert variant_environment("fluxmoe-routed-host-offload") == {
+        "FLUXMOE_ENABLE": "1",
+        "FLUXMOE_PLANNER_MODE": "fixed",
+        "FLUXMOE_STORAGE_MODE": "hybrid",
+        "FLUXMOE_GPU_MATERIALIZATION_MODE": "expertwise",
+        "FLUXMOE_ROUTED_EXPERTS": "1",
+    }
     assert variant_environment("fluxmoe-gpu-compressed") == {
         "FLUXMOE_ENABLE": "1",
         "FLUXMOE_PLANNER_MODE": "fixed",
@@ -282,6 +289,8 @@ def test_worker_mechanism_counters_are_aggregated_across_tp_ranks() -> None:
         "gpu_compressed_source_bytes": 30,
         "gpu_compressed_storage_bytes": 10,
         "expert_source_bytes": 50,
+        "routed_layer_loads": 0,
+        "routed_expert_loads": 0,
     }
 
     totals = _aggregate_worker_counters(
@@ -304,6 +313,8 @@ def test_worker_mechanism_counters_are_aggregated_across_tp_ranks() -> None:
         "gpu_compressed_source_bytes": 120,
         "gpu_compressed_storage_bytes": 40,
         "expert_source_bytes": 200,
+        "routed_layer_loads": 0,
+        "routed_expert_loads": 0,
     }
 
 
@@ -324,6 +335,8 @@ def test_worker_mechanism_counters_fail_closed() -> None:
         "gpu_compressed_source_bytes": 30,
         "gpu_compressed_storage_bytes": 10,
         "expert_source_bytes": 50,
+        "routed_layer_loads": 0,
+        "routed_expert_loads": 0,
     }
 
     with pytest.raises(RuntimeError, match="expected 4"):

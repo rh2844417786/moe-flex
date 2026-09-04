@@ -64,6 +64,22 @@ def test_hierarchy_rejects_missing_or_cross_layer_destination() -> None:
         )
 
 
+def test_hierarchy_materializes_selected_layer_subset() -> None:
+    store = _FakeStore("host_pinned")
+    hierarchy = StorageHierarchy(
+        stores={"layer.0.a": store, "layer.0.b": store},
+        tensor_layers={"layer.0.a": 0, "layer.0.b": 0},
+    )
+    destination = torch.empty(4, dtype=torch.bfloat16)
+
+    receipts = hierarchy.materialize_tensors(
+        0, {"layer.0.b": destination}, stream=17
+    )
+
+    assert [receipt.tensor_id for receipt in receipts] == ["layer.0.b"]
+    assert store.calls == [("layer.0.b", 17)]
+
+
 def test_receipt_rejects_zero_bytes_or_invalid_elapsed_time() -> None:
     with pytest.raises(ValueError, match="nbytes"):
         MaterializationReceipt(

@@ -20,6 +20,8 @@ class EvidenceProfile:
     gpu_compressed_source_bytes: CounterRequirement
     gpu_compressed_storage_bytes: CounterRequirement
     startup_gpu_store_upload_bytes: CounterRequirement
+    routed_layer_loads: CounterRequirement = "zero"
+    routed_expert_loads: CounterRequirement = "zero"
 
 
 _PROFILES = {
@@ -47,6 +49,19 @@ _PROFILES = {
         "zero",
         "zero",
         "zero",
+    ),
+    "fluxmoe-routed-host-offload": EvidenceProfile(
+        "positive",
+        "positive",
+        "positive",
+        "zero",
+        "zero",
+        "zero",
+        "zero",
+        "zero",
+        "zero",
+        routed_layer_loads="positive",
+        routed_expert_loads="positive",
     ),
     "fluxmoe-gpu-compressed": EvidenceProfile(
         "positive",
