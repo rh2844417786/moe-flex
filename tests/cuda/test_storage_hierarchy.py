@@ -6,6 +6,7 @@ import torch
 
 from flexmoe.codec.reference import encode_bf16_bits
 from flexmoe.codec.packed import pack_layer_descriptor
+from flexmoe.paged_tensor import PagedTensorRegion
 from flexmoe.storage.gpu_compressed import (
     BatchedGpuCompressedStore,
     GpuCompressedStore,
@@ -35,6 +36,53 @@ def test_host_store_owns_pinned_source_and_copies_non_blocking() -> None:
     assert receipt.backend == "host_pinned"
     assert receipt.nbytes == source.numel() * source.element_size()
     assert torch.equal(destination.cpu(), source)
+
+
+def test_host_store_copies_selected_experts_into_paged_layer() -> None:
+    _require_cuda()
+    experts = 16
+    expert_shape = (128, 256)
+    layer_shape = (experts, *expert_shape)
+    raw_bytes = torch.empty(layer_shape, dtype=torch.bfloat16).numel() * 2
+    probe = PagedTensorRegion(device=0, virtual_bytes=1)
+    aligned_bytes = ((raw_bytes + probe.granularity - 1) // probe.granularity) * probe.granularity
+    region = PagedTensorRegion(device=0, virtual_bytes=5 * aligned_bytes)
+    block = region.create_block(aligned_bytes)
+    stream = torch.cuda.Stream(device=0)
+
+    for layer in (0, 4):
+        offset = layer * aligned_bytes
+        region.map(offset, block, aligned_bytes)
+        destination = region.tensor(offset, layer_shape, torch.bfloat16)
+        selected = (5, 13)
+        sources = {
+            f"layer.{layer}.expert.{expert}.w13": torch.full(
+                expert_shape, layer * 20 + expert + 0.25, dtype=torch.bfloat16
+            )
+            for expert in selected
+        }
+        store = PinnedHostStore(sources)
+        hierarchy = StorageHierarchy(
+            stores={tensor_id: store for tensor_id in sources},
+            tensor_layers={tensor_id: layer for tensor_id in sources},
+        )
+        hierarchy.materialize_tensors(
+            layer,
+            {
+                f"layer.{layer}.expert.{expert}.w13": destination[expert]
+                for expert in selected
+            },
+            stream=stream.cuda_stream,
+        )
+        stream.synchronize()
+
+        for expert in selected:
+            assert torch.equal(
+                destination[expert].cpu(),
+                sources[f"layer.{layer}.expert.{expert}.w13"],
+            )
+        del destination
+        region.unmap(offset, aligned_bytes)
 
 
 def test_hierarchy_materializes_both_backends_on_one_load_stream() -> None:

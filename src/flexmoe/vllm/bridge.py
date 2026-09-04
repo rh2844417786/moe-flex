@@ -357,10 +357,10 @@ class _LayerKindMaterializer(LayerMaterializer):
         verified: set[tuple[int, int]] = set()
         expected = {(layer_idx, expert_idx) for expert_idx in expert_ids}
         if self._verify_weights:
-            external_stream = torch.cuda.ExternalStream(  # type: ignore[no-untyped-call]
-                load_stream, device=self._device
-            )
-            external_stream.synchronize()
+            # vLLM may dispatch profile work through auxiliary CUDA streams.
+            # A device fence keeps the diagnostic D2H hash from racing any
+            # stream that has touched a remapped physical expert window.
+            torch.cuda.synchronize(self._device)
             for expert_idx in expert_ids:
                 key = (layer_idx, expert_idx)
                 if key in self._verified_routed_experts:
