@@ -30,6 +30,7 @@ BenchVariant = Literal[
     "resident",
     "vllm-o",
     "fluxmoe-fixed",
+    "fluxmoe-host-offload",
     "fluxmoe-gpu-compressed",
     "fluxmoe-dynamic",
     "fluxmoe-unbalanced",
@@ -40,12 +41,18 @@ _VARIANTS = {
     "resident",
     "vllm-o",
     "fluxmoe-fixed",
+    "fluxmoe-host-offload",
     "fluxmoe-gpu-compressed",
     "fluxmoe-dynamic",
     "fluxmoe-unbalanced",
     "pagedtensor-resident",
 }
-_IMPLEMENTED_VARIANTS = {"resident", "fluxmoe-fixed", "fluxmoe-gpu-compressed"}
+_IMPLEMENTED_VARIANTS = {
+    "resident",
+    "fluxmoe-fixed",
+    "fluxmoe-host-offload",
+    "fluxmoe-gpu-compressed",
+}
 _MECHANISM_COUNTER_NAMES = (
     "mapped_bytes",
     "mapping_count",
@@ -191,7 +198,14 @@ def load_run_config(path: Path) -> RunConfig:
         raise ValueError("storage_mode must be hybrid or gpu-compressed")
     if config.gpu_materialization_mode not in {"expertwise", "batched"}:
         raise ValueError("gpu_materialization_mode must be expertwise or batched")
-    if config.variant == "fluxmoe-gpu-compressed":
+    if config.variant == "fluxmoe-host-offload":
+        if config.gpu_compressed_budget_bytes != 0:
+            raise ValueError("fluxmoe-host-offload requires zero GPU compressed budget")
+        if config.storage_mode != "hybrid":
+            raise ValueError("fluxmoe-host-offload requires hybrid storage")
+        if config.gpu_materialization_mode != "expertwise":
+            raise ValueError("fluxmoe-host-offload requires expertwise materialization")
+    elif config.variant == "fluxmoe-gpu-compressed":
         if config.storage_mode != "gpu-compressed":
             raise ValueError("fluxmoe-gpu-compressed requires gpu-compressed storage")
         if config.gpu_materialization_mode != "batched":
@@ -206,6 +220,12 @@ def variant_environment(variant: str) -> dict[str, str]:
         "resident": {"FLUXMOE_ENABLE": "0"},
         "vllm-o": {"FLUXMOE_ENABLE": "0", "VLLM_O_ENABLE": "1"},
         "fluxmoe-fixed": {
+            "FLUXMOE_ENABLE": "1",
+            "FLUXMOE_PLANNER_MODE": "fixed",
+            "FLUXMOE_STORAGE_MODE": "hybrid",
+            "FLUXMOE_GPU_MATERIALIZATION_MODE": "expertwise",
+        },
+        "fluxmoe-host-offload": {
             "FLUXMOE_ENABLE": "1",
             "FLUXMOE_PLANNER_MODE": "fixed",
             "FLUXMOE_STORAGE_MODE": "hybrid",
@@ -627,6 +647,7 @@ def run_benchmark(
         and config.variant
         in {
             "fluxmoe-fixed",
+            "fluxmoe-host-offload",
             "fluxmoe-gpu-compressed",
         }
         else "0"

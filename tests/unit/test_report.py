@@ -61,6 +61,24 @@ def test_gpu_compressed_classification_requires_zero_h2d() -> None:
     assert classification.status == "SUPPORTED"
 
 
+def test_host_offload_classification_requires_h2d_without_decode() -> None:
+    evidence = RunEvidence(
+        output_tokens_per_second=100.0,
+        mapped_bytes=4096,
+        h2d_bytes=2048,
+        decompressed_bytes=0,
+        output_tokens_match=True,
+        router_topk_match=True,
+        weights_bit_exact=True,
+    )
+
+    classification = classify_support(
+        evidence, stressed_delta=0.1, variant="fluxmoe-host-offload"
+    )
+
+    assert classification.status == "SUPPORTED"
+
+
 @pytest.mark.parametrize(
     "field",
     ["output_tokens_match", "router_topk_match", "weights_bit_exact"],

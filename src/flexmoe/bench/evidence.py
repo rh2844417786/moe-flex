@@ -14,17 +14,50 @@ class EvidenceProfile:
     mapped_bytes: CounterRequirement
     runtime_host_expert_h2d_bytes: CounterRequirement
     runtime_host_copy_launches: CounterRequirement
+    gpu_decode_input_bytes: CounterRequirement
     gpu_decode_output_bytes: CounterRequirement
     gpu_decode_launches: CounterRequirement
+    gpu_compressed_source_bytes: CounterRequirement
+    gpu_compressed_storage_bytes: CounterRequirement
+    startup_gpu_store_upload_bytes: CounterRequirement
 
 
 _PROFILES = {
-    "resident": EvidenceProfile("zero", "zero", "zero", "zero", "zero"),
+    "resident": EvidenceProfile(
+        "zero", "zero", "zero", "zero", "zero", "zero", "zero", "zero", "zero"
+    ),
     "fluxmoe-fixed": EvidenceProfile(
-        "positive", "positive", "positive", "positive", "positive"
+        "positive",
+        "positive",
+        "positive",
+        "positive",
+        "positive",
+        "positive",
+        "positive",
+        "positive",
+        "positive",
+    ),
+    "fluxmoe-host-offload": EvidenceProfile(
+        "positive",
+        "positive",
+        "positive",
+        "zero",
+        "zero",
+        "zero",
+        "zero",
+        "zero",
+        "zero",
     ),
     "fluxmoe-gpu-compressed": EvidenceProfile(
-        "positive", "zero", "zero", "positive", "positive"
+        "positive",
+        "zero",
+        "zero",
+        "positive",
+        "positive",
+        "positive",
+        "positive",
+        "positive",
+        "positive",
     ),
 }
 

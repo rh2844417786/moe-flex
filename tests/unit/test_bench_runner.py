@@ -76,6 +76,12 @@ def test_variant_environment_is_explicit_and_fail_closed() -> None:
         "FLUXMOE_STORAGE_MODE": "hybrid",
         "FLUXMOE_GPU_MATERIALIZATION_MODE": "expertwise",
     }
+    assert variant_environment("fluxmoe-host-offload") == {
+        "FLUXMOE_ENABLE": "1",
+        "FLUXMOE_PLANNER_MODE": "fixed",
+        "FLUXMOE_STORAGE_MODE": "hybrid",
+        "FLUXMOE_GPU_MATERIALIZATION_MODE": "expertwise",
+    }
     assert variant_environment("fluxmoe-gpu-compressed") == {
         "FLUXMOE_ENABLE": "1",
         "FLUXMOE_PLANNER_MODE": "fixed",
@@ -84,6 +90,20 @@ def test_variant_environment_is_explicit_and_fail_closed() -> None:
     }
     with pytest.raises(ValueError, match="unsupported benchmark variant"):
         variant_environment("unknown")
+
+
+def test_host_offload_config_forbids_compressed_gpu_budget(tmp_path: Path) -> None:
+    source = Path("benchmarks/configs/fluxmoe_host_offload.yaml").read_text(
+        encoding="utf-8"
+    )
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        source.replace("gpu_compressed_budget_bytes: 0", "gpu_compressed_budget_bytes: 1"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="requires zero GPU compressed budget"):
+        load_run_config(config_path)
 
 
 def test_reference_comparison_checks_tokens_router_and_delta(tmp_path: Path) -> None:

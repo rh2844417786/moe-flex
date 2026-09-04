@@ -10,6 +10,7 @@ def test_all_declared_benchmark_configs_share_formal_invariants() -> None:
     assert {path.name for path in paths} == {
         "fluxmoe_dynamic.yaml",
         "fluxmoe_fixed.yaml",
+        "fluxmoe_host_offload.yaml",
         "fluxmoe_gpu_compressed.yaml",
         "fluxmoe_unbalanced.yaml",
         "pagedtensor_resident.yaml",
@@ -21,6 +22,7 @@ def test_all_declared_benchmark_configs_share_formal_invariants() -> None:
         "resident",
         "vllm-o",
         "fluxmoe-fixed",
+        "fluxmoe-host-offload",
         "fluxmoe-gpu-compressed",
         "fluxmoe-dynamic",
         "fluxmoe-unbalanced",
@@ -34,3 +36,9 @@ def test_all_declared_benchmark_configs_share_formal_invariants() -> None:
     )
     assert gpu_compressed.storage_mode == "gpu-compressed"
     assert gpu_compressed.gpu_materialization_mode == "batched"
+    host_offload = next(
+        config for config in configs if config.variant == "fluxmoe-host-offload"
+    )
+    assert host_offload.gpu_compressed_budget_bytes == 0
+    assert host_offload.storage_mode == "hybrid"
+    assert host_offload.gpu_materialization_mode == "expertwise"
