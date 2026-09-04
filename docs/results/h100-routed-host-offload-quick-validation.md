@@ -68,8 +68,8 @@ router Top-K 产生后，仅将本次前向实际命中的去重专家从 pinned
 平均命中专家数与传输比例为：
 
 ```text
-average selected experts = 811,246 / 10,368 = 78.2459
-selected fraction        = 78.2459 / 512 = 15.28%
+average selected experts = 811,246 / 10,368 = 78.2452
+selected fraction        = 78.2452 / 512 = 15.28%
 H2D reduction            = 1 - 637,989,814,272 / 4,174,708,211,712
                          = 84.72%
 ```
