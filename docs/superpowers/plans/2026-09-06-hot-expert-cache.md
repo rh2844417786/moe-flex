@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Worktree: `/Users/a1234/code/flexmoe/.worktrees/repro-fluxmoe`, branch `repro/fluxmoe`; base server commit `74a4b87`.
-- No new dependency, server internet access, model weight download, pruning, quantization, rerouting or extra GPU memory.
+- No new dependency, model/data download, pruning, quantization, rerouting or extra GPU memory. Server network is limited to user-authorized GitHub sync and fetching the exact pinned Docker Hub base image if absent; Docker build RUN steps remain offline.
 - GPU: 4 exclusive H100, TP4, eager, compilation level=0, original BF16 weights and routing.
 - Server outputs remain under `/home/jovyan/wangtonghan/moe-flex`; public weights/data are read-only.
 - CPU tests are not H100 evidence; all hardware performance remains pending until server runs.
