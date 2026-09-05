@@ -1,0 +1,4 @@
+run_id,arm,status,offload_count,staging_slots,repetitions,batch_size,context_length,output_length,gpu_memory_utilization,throughput_median,throughput_min,throughput_max,kv_bytes_total,smoke_matches_resident,performance_outputs_match_resident
+01-resident-o0-s1,resident,complete,0,1,3,512,4096,256,0.6,1233.0319241570437,1222.0323799312625,1241.7458180844778,35883319296,,
+02-partial-fixed-kv-o6-s2,partial-fixed-kv,complete,6,2,3,512,4096,256,0.6,1013.6572697830887,1012.2494305195473,1015.5413527999192,35883319296,True,False
+03-partial-auto-kv-o6-s2,partial-auto-kv,complete,6,2,3,512,4096,256,0.6,1229.504190296617,1059.3208468837631,1235.6586905185516,48731258880,True,False
