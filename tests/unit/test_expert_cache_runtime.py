@@ -253,6 +253,16 @@ def test_resident_calibration_rpc_runs_without_enable(monkeypatch, tmp_path):
     monkeypatch.setenv("FLUXMOE_MODEL_PATH", str(tmp_path))
     worker = FluxMoEWorkerExtension()
     worker.parallel_config = type("Parallel", (), {"tensor_parallel_size": 4})()
+    worker.model_config = type(
+        "Model",
+        (),
+        {
+            "model": str(tmp_path),
+            "hf_config": type(
+                "HF", (), json.loads((tmp_path / "config.json").read_text())
+            )(),
+        },
+    )()
     worker.rank = 2
     worker.fluxmoe_expert_calibration("start")
     record_calibration("model.layers.1.mlp.experts", torch.tensor([[0, 3, 3]]))
@@ -292,7 +302,7 @@ def test_native_configuration_uses_logical_experts_and_final_chunk(monkeypatch):
     from contextlib import contextmanager
     from types import SimpleNamespace
 
-    from flexmoe.vllm.expert_cache import logical_fused_experts
+    from flexmoe.vllm.expert_cache import KernelConfigRecorder, logical_fused_experts
 
     selected = []
     current = None
@@ -336,6 +346,7 @@ def test_native_configuration_uses_logical_experts_and_final_chunk(monkeypatch):
         sys.modules, "vllm.envs", SimpleNamespace(VLLM_FUSED_MOE_CHUNK_SIZE=3)
     )
     hidden = torch.zeros(7, 2, dtype=torch.bfloat16)
+    records = KernelConfigRecorder(capacity=2)
     result = logical_fused_experts(
         hidden,
         torch.empty(9, 4, 2),
@@ -346,10 +357,34 @@ def test_native_configuration_uses_logical_experts_and_final_chunk(monkeypatch):
         num_experts=4,
         activation="silu",
         apply_router_weight_on_input=False,
+        config_recorder=records,
     )
     assert selected == [3, 3, 1]
     assert torch.equal(result, torch.ones_like(hidden))
     assert current is None
+    snapshot = records.snapshot()
+    assert snapshot["records"] == [
+        {
+            "chunk_tokens": 3,
+            "w13_shape": [4, 4, 2],
+            "w2_shape": [4, 2, 2],
+            "top_k": 1,
+            "config": {"tokens": 3},
+            "selections": 2,
+        },
+        {
+            "chunk_tokens": 1,
+            "w13_shape": [4, 4, 2],
+            "w2_shape": [4, 2, 2],
+            "top_k": 1,
+            "config": {"tokens": 1},
+            "selections": 1,
+        },
+    ]
+    for chunk_tokens in range(4, 100):
+        records.record(chunk_tokens, (4, 4, 2), (4, 2, 2), 1, {"tokens": chunk_tokens})
+    assert len(records.snapshot()["records"]) == 2
+    assert records.snapshot()["unrecorded_selections"] == 96
 
 
 def test_cuda_sampling_recycles_completed_events_across_prefill_decode(monkeypatch):
@@ -402,3 +437,84 @@ def test_pending_cuda_samples_reject_reset_without_losing_cpu_timing(monkeypatch
     with pytest.raises(RuntimeError, match="synchronize"):
         pool.stats(synchronize=False, reset_timing=True)
     assert pool.stats()["timing"] == before
+
+
+@pytest.mark.parametrize("mismatch", ["path", "model_type", "geometry"])
+def test_runtime_rejects_actual_model_mismatch_before_allocation(
+    monkeypatch, tmp_path, mismatch
+):
+    import sys
+    from types import SimpleNamespace
+
+    from flexmoe.vllm import expert_cache
+
+    config_fields = {
+        "model_type": "qwen3_next",
+        "num_hidden_layers": 2,
+        "num_experts": 4,
+        "hidden_size": 16,
+        "moe_intermediate_size": 32,
+    }
+    other = tmp_path / "checkpoint-b"
+    other.mkdir()
+    for root in (tmp_path, other):
+        (root / "config.json").write_text(json.dumps(config_fields))
+        (root / "model.safetensors.index.json").write_text("{}")
+    actual_fields = dict(config_fields)
+    actual_path = str(tmp_path)
+    if mismatch == "path":
+        actual_path = str(other)
+    elif mismatch == "model_type":
+        actual_fields["model_type"] = "qwen3_moe"
+    else:
+        actual_fields["hidden_size"] = 32
+    config = SimpleNamespace(
+        model_config=SimpleNamespace(
+            model=actual_path,
+            hf_config=SimpleNamespace(**actual_fields),
+            enforce_eager=True,
+        ),
+        compilation_config=SimpleNamespace(level=0, custom_ops=["all"]),
+        parallel_config=SimpleNamespace(pipeline_parallel_size=1, data_parallel_size=1),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm.config",
+        SimpleNamespace(get_current_vllm_config=lambda: config),
+    )
+    monkeypatch.setenv("FLUXMOE_MODEL_PATH", str(tmp_path))
+    monkeypatch.setattr(expert_cache, "_REGISTRY", None)
+    # No startup profile or allocator is supplied: mismatch must fail before
+    # either can be read/created, even for two identical-geometry checkpoints.
+    with pytest.raises(ValueError, match="actual model"):
+        expert_cache.registry_for_layer(SimpleNamespace(tp_size=4, tp_rank=0), 4)
+
+
+def test_calibration_rejects_actual_model_path_mislabel(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from flexmoe.vllm.bridge import FluxMoEWorkerExtension
+    from flexmoe.vllm.expert_calibration import reset_calibration
+
+    reset_calibration()
+    config = {
+        "model_type": "qwen3_next",
+        "num_hidden_layers": 2,
+        "num_experts": 4,
+        "hidden_size": 16,
+        "moe_intermediate_size": 32,
+    }
+    (tmp_path / "config.json").write_text(json.dumps(config))
+    (tmp_path / "model.safetensors.index.json").write_text("{}")
+    other = tmp_path / "checkpoint-b"
+    other.mkdir()
+    monkeypatch.setenv("FLUXMOE_MODEL_PATH", str(tmp_path))
+    monkeypatch.setenv("FLUXMOE_EXPERT_CALIBRATION", "1")
+    worker = FluxMoEWorkerExtension()
+    worker.parallel_config = SimpleNamespace(tensor_parallel_size=4)
+    worker.model_config = SimpleNamespace(
+        model=str(other), hf_config=SimpleNamespace(**config)
+    )
+    with pytest.raises(ValueError, match="actual model"):
+        worker.fluxmoe_expert_calibration("start")
+    reset_calibration()

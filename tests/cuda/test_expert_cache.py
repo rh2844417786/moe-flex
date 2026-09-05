@@ -116,3 +116,82 @@ def test_mapped_bf16_native_topk_parity_churn_full_demand_and_stream_reuse(tp_ra
     assert stats["policy"]["evictions"] > 0
     assert stats["policy"]["cache_bypasses"] > 0
     assert stats["timing"]["cuda_sample_count"] == 1
+
+
+def test_async_cross_stream_ingress_and_promotion_wait_for_delayed_consumer():
+    """No tensor reads/assertions/stats between queued forwards.
+
+    Removing CudaPoolBackend.begin's wait_event should let layer 1 overwrite
+    ingress/cache while layer 0 is delayed, corrupting the retained layer-0
+    output. This mutation expectation must still be verified on CUDA hardware.
+    """
+    vllm = pytest.importorskip("vllm")
+    assert vllm.__version__ == "0.10.2"
+    from vllm.model_executor.layers.fused_moe import fused_experts
+
+    generator = torch.Generator(device="cpu").manual_seed(190)
+    sources = [
+        (
+            torch.randn(4, 64, 64, generator=generator).bfloat16() * 0.05,
+            torch.randn(4, 64, 32, generator=generator).bfloat16() * 0.05,
+        )
+        for _ in range(2)
+    ]
+    backend = CudaPoolBackend(0)
+    pool = ExpertPool(
+        ExpertCachePolicy(2, 4, 0.0, 1, policy="lru"), sources, backend=backend
+    )
+    streams = [torch.cuda.Stream(), torch.cuda.Stream()]
+    hidden = torch.randn(4, 64, dtype=torch.bfloat16, device="cuda")
+    ids = torch.zeros(4, 1, dtype=torch.int32, device="cuda")
+    weights = torch.ones(4, 1, dtype=torch.float32, device="cuda")
+    expected = []
+    for layer in range(2):
+        expected.append(
+            fused_experts(
+                hidden,
+                sources[layer][0].cuda(),
+                sources[layer][1].cuda(),
+                weights,
+                ids,
+                inplace=False,
+                activation="silu",
+            )
+        )
+
+    def compute(w13, w2, mapping):
+        return logical_fused_experts(
+            hidden,
+            w13,
+            w2,
+            weights,
+            ids,
+            mapping,
+            num_experts=4,
+            activation="silu",
+            apply_router_weight_on_input=False,
+        )
+
+    # Warm the exact mapped kernel/config before injecting the delay, so host
+    # JIT compilation cannot quietly drain the delayed stream during the test.
+    for layer in range(2):
+        pool.execute(layer, ids, compute)
+    pool.reconfigure(0.0)  # setup synchronization only; clears warmed cache
+
+    def delayed_compute(w13, w2, mapping):
+        torch.cuda._sleep(500_000_000)
+        return compute(w13, w2, mapping)
+
+    with torch.cuda.stream(streams[0]):
+        first = pool.execute(0, ids, delayed_compute)
+        outstanding = torch.cuda.Event()
+        outstanding.record()
+    # Event query is nonblocking and inspects no tensor contents. If a very
+    # slow host already drained the delay, fail instead of silently passing.
+    assert not outstanding.query(), "delay drained before reuse could be exercised"
+    with torch.cuda.stream(streams[1]):
+        second = pool.execute(1, ids, compute)
+    assert not outstanding.query(), "delay drained before both forwards were submitted"
+    torch.cuda.synchronize()  # the sole sync after the critical sequence begins
+    torch.testing.assert_close(first, expected[0], atol=1e-3, rtol=1e-2)
+    torch.testing.assert_close(second, expected[1], atol=1e-3, rtol=1e-2)

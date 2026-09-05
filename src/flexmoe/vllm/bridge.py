@@ -1033,7 +1033,8 @@ class FluxMoEWorkerExtension:
         tp_size = getattr(parallel, "tensor_parallel_size", None)
         if type(tp_size) is not int:
             raise IntegrityError("worker TP configuration is unavailable")
-        return calibration_rpc(action, tp_size, int(getattr(self, "rank", 0)))
+        return calibration_rpc(action, tp_size, int(getattr(self, "rank", 0)),
+                               getattr(self, "model_config", None))
 
     def fluxmoe_mechanism_counters(self) -> dict[str, int]:
         return require_active_registry().mechanism_counters()

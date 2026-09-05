@@ -102,19 +102,58 @@ class ExpertCalibration:
         }
 
 
+def runtime_model_profile_identity(
+    model_config: object,
+    model_path: str | Path,
+    tensor_parallel_size: int,
+) -> ModelProfileIdentity:
+    """Bind the profile producer/consumer to vLLM's actual loaded model."""
+    actual_path = getattr(model_config, "model", None)
+    if not isinstance(actual_path, str) or (
+        Path(actual_path).resolve() != Path(model_path).resolve()
+    ):
+        raise ValueError("actual model path differs from FLUXMOE_MODEL_PATH")
+    identity = model_profile_identity(model_path, tensor_parallel_size)
+    hf_config = getattr(model_config, "hf_config", None)
+    if getattr(hf_config, "model_type", None) != "qwen3_next":
+        raise ValueError("actual model type differs from supported qwen3_next")
+    geometry = identity["geometry"]
+    expected = {
+        "num_hidden_layers": geometry["total_layers"],
+        "num_experts": geometry["num_experts"],
+        "hidden_size": geometry["hidden_size"],
+        "moe_intermediate_size": geometry["intermediate_size"] * tensor_parallel_size,
+    }
+    if any(
+        type(getattr(hf_config, field, None)) is not int
+        or getattr(hf_config, field) != value
+        for field, value in expected.items()
+    ):
+        raise ValueError("actual model HF geometry differs from profile model config")
+    return identity
+
+
 _CAPTURE: ExpertCalibration | None = None
+_CAPTURE_IDENTITY: ModelProfileIdentity | None = None
 
 
-def calibration_rpc(action: str, tp_size: int, rank: int) -> dict[str, object]:
-    global _CAPTURE
+def calibration_rpc(
+    action: str, tp_size: int, rank: int, model_config: object
+) -> dict[str, object]:
+    global _CAPTURE, _CAPTURE_IDENTITY
     if os.environ.get("FLUXMOE_EXPERT_CALIBRATION") != "1":
         raise ValueError("FLUXMOE_EXPERT_CALIBRATION=1 is required")
     if action not in ("start", "stop"):
         raise ValueError("calibration action must be start or stop")
-    identity = model_profile_identity(os.environ["FLUXMOE_MODEL_PATH"], tp_size)
+    identity = runtime_model_profile_identity(
+        model_config, os.environ["FLUXMOE_MODEL_PATH"], tp_size
+    )
+    if _CAPTURE_IDENTITY is not None and _CAPTURE_IDENTITY != identity:
+        raise ValueError("actual model identity changed during calibration lifetime")
     if _CAPTURE is None:
         geometry = identity["geometry"]
         _CAPTURE = ExpertCalibration(geometry["total_layers"], geometry["num_experts"])
+        _CAPTURE_IDENTITY = identity
     result = _CAPTURE.start() if action == "start" else _CAPTURE.stop()
     return {"schema_version": 1, "rank": rank, **identity, **result}
 
@@ -127,5 +166,6 @@ def record_calibration(layer_name: str, topk_ids: torch.Tensor) -> None:
 
 
 def reset_calibration() -> None:
-    global _CAPTURE
+    global _CAPTURE, _CAPTURE_IDENTITY
     _CAPTURE = None
+    _CAPTURE_IDENTITY = None

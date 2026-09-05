@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 import torch
@@ -13,13 +14,80 @@ from flexmoe.errors import IntegrityError
 from flexmoe.runtime.expert_cache_policy import ExpertCachePolicy
 from flexmoe.runtime.expert_pool import CudaPoolBackend, ExpertPool, PoolBackend
 from flexmoe.runtime.expert_profile import ExpertProfile
-from flexmoe.vllm.expert_calibration import ModelProfileIdentity, model_profile_identity
+from flexmoe.vllm.expert_calibration import (
+    ModelProfileIdentity,
+    runtime_model_profile_identity,
+)
 from flexmoe.vllm.loader import ExpertLoadAccumulator
 from flexmoe.vllm.partial import (
     HostExpertLayer,
     _layer_index,
     validate_execution_config,
 )
+
+
+@dataclass
+class _KernelConfigRecord:
+    chunk_tokens: int
+    w13_shape: tuple[int, ...]
+    w2_shape: tuple[int, ...]
+    top_k: int
+    config: dict[str, int]
+    selections: int = 1
+
+    def snapshot(self) -> dict[str, object]:
+        return {
+            "chunk_tokens": self.chunk_tokens,
+            "w13_shape": list(self.w13_shape),
+            "w2_shape": list(self.w2_shape),
+            "top_k": self.top_k,
+            "config": dict(self.config),
+            "selections": self.selections,
+        }
+
+
+class KernelConfigRecorder:
+    """Bounded distinct numeric kernel choices; repeated choices aggregate."""
+
+    def __init__(self, capacity: int = 64) -> None:
+        if type(capacity) is not int or capacity <= 0:
+            raise ValueError("kernel record capacity must be positive")
+        self.capacity = capacity
+        self._records: dict[tuple[object, ...], _KernelConfigRecord] = {}
+        self._unrecorded = 0
+
+    def record(
+        self,
+        chunk_tokens: int,
+        w13_shape: tuple[int, ...],
+        w2_shape: tuple[int, ...],
+        top_k: int,
+        config: dict[str, int],
+    ) -> None:
+        if any(
+            not isinstance(key, str) or type(value) is not int
+            for key, value in config.items()
+        ):
+            raise ValueError(
+                "native kernel configuration must contain numeric integer values"
+            )
+        key = (chunk_tokens, w13_shape, w2_shape, top_k, tuple(sorted(config.items())))
+        previous = self._records.get(key)
+        if previous is not None:
+            previous.selections += 1
+        elif len(self._records) < self.capacity:
+            self._records[key] = _KernelConfigRecord(
+                chunk_tokens, w13_shape, w2_shape, top_k, dict(config)
+            )
+        else:
+            self._unrecorded += 1
+
+    def snapshot(self) -> dict[str, object]:
+        return {
+            "capacity": self.capacity,
+            "unrecorded_selections": self._unrecorded,
+            "records": [record.snapshot() for record in self._records.values()],
+        }
 
 
 def logical_fused_experts(
@@ -33,6 +101,7 @@ def logical_fused_experts(
     num_experts: int,
     activation: str,
     apply_router_weight_on_input: bool,
+    config_recorder: KernelConfigRecorder | None = None,
 ) -> torch.Tensor:
     """Keep native logical-E tuning even though pool physical E is different.
 
@@ -61,6 +130,14 @@ def logical_fused_experts(
             dtype,
             end - begin,
         )
+        if config_recorder is not None:
+            config_recorder.record(
+                end - begin,
+                (num_experts, *w13.shape[1:]),
+                (num_experts, *w2.shape[1:]),
+                topk_ids.shape[1],
+                config,
+            )
         with package.override_config(config):
             result = package.fused_experts(
                 hidden_states[begin:end],
@@ -138,6 +215,7 @@ class ExpertCacheRegistry:
         self.names: dict[int, str] = {}
         self.accumulators: dict[int, ExpertLoadAccumulator] = {}
         self.started = False
+        self.kernel_configs = KernelConfigRecorder()
 
     def register_layer(
         self,
@@ -254,6 +332,7 @@ class ExpertCacheRegistry:
                 num_experts=self.num_experts,
                 activation=activation,
                 apply_router_weight_on_input=apply_router_weight_on_input,
+                config_recorder=self.kernel_configs,
             ),
         )
 
@@ -266,6 +345,7 @@ class ExpertCacheRegistry:
             "tensor_parallel_size": self.tp_size,
             "identity": self.identity,
             "kernel_config_scope": "native logical E geometry per actual native chunk size",
+            "kernel_config_records": self.kernel_configs.snapshot(),
             "transfer_schedule": "demand-critical H2D on compute stream; no speculative prefetch",
         }
 
@@ -292,7 +372,9 @@ def registry_for_layer(layer: torch.nn.Module, num_experts: int) -> ExpertCacheR
         )
         if type(tp_size) is not int or type(tp_rank) is not int:
             raise IntegrityError("vLLM TP metadata unavailable")
-        identity = model_profile_identity(os.environ["FLUXMOE_MODEL_PATH"], tp_size)
+        identity = runtime_model_profile_identity(
+            config.model_config, os.environ["FLUXMOE_MODEL_PATH"], tp_size
+        )
         profile = ExpertProfile.from_dict(
             json.loads(Path(os.environ["FLUXMOE_EXPERT_PROFILE_PATH"]).read_text())
         )
