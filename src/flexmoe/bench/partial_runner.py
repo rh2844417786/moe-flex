@@ -507,6 +507,8 @@ def _memory(engine: Any, workers: int) -> list[dict[str, Any]]:
         "free_gpu_bytes",
         "torch_allocated_bytes",
         "torch_reserved_bytes",
+        "torch_peak_allocated_bytes",
+        "torch_peak_reserved_bytes",
         "available_kv_cache_bytes",
         "model_memory_bytes",
         "kv_cache_allocated_bytes",
@@ -628,16 +630,91 @@ def validate_partial_mechanism(
             )
 
 
+class BenchmarkBackend:
+    """Explicit extension points; generation/timing/persistence stay shared."""
+
+    stats_key = "partial_stats"
+    requires_layer_transfers = True
+
+    def summary_fields(self) -> dict[str, Any]:
+        return {}
+
+    def contract_fields(self) -> dict[str, Any]:
+        return {}
+
+    def workload(self, config: PartialRunConfig) -> PartialWorkload:
+        return load_partial_workload(
+            config.dataset_path,
+            config.dataset_manifest,
+            config.batch_size,
+            config.context_length,
+        )
+
+    def smoke_tokens(self, workload: PartialWorkload) -> tuple[int, ...]:
+        return workload.prompts[0][:1024]
+
+    def configure(
+        self, config: PartialRunConfig, root: Path, layers: tuple[int, ...]
+    ) -> None:
+        _configure_environment(config, root, layers)
+
+    def kv_budget(self, raw: object, workers: int) -> int:
+        return resident_kv_budget(raw, workers)
+
+    def snapshot(
+        self,
+        engine: Any,
+        workers: int,
+        *,
+        reset_timing: bool = False,
+        synchronize: bool = True,
+    ) -> list[dict[str, Any]]:
+        return _snapshot(
+            engine, workers, reset_timing=reset_timing, synchronize=synchronize
+        )
+
+    def validate_initial(self, raw: object, config: PartialRunConfig) -> None:
+        pass
+
+    def validate(
+        self, raw: object, config: PartialRunConfig, layers: tuple[int, ...]
+    ) -> None:
+        validate_partial_mechanism(
+            raw, layers, config.staging_slots, config.tensor_parallel_size
+        )
+
+    def deltas(
+        self, before: object, after: object, *, expected_workers: int
+    ) -> dict[str, Any]:
+        return worker_deltas(before, after, expected_workers=expected_workers)
+
+    def validate_repetition(
+        self, diagnostics: dict[str, Any], config: PartialRunConfig
+    ) -> None:
+        pass
+
+    def timing_available(self, diagnostics: dict[str, Any]) -> bool:
+        return bool(diagnostics["timing"]["sample_count"] > 0)
+
+    def before_measurement(self, engine: Any, workers: int) -> None:
+        pass
+
+    def measurement_fields(self, engine: Any, workers: int) -> dict[str, Any]:
+        return {}
+
+
 def run_benchmark(
     config: PartialRunConfig,
     *,
     project_root: Path,
     run_dir: Path,
     resident_run: Path | None = None,
+    backend: BenchmarkBackend | None = None,
 ) -> Path:
     """Execute one immutable point. Exceptions retain atomic numeric progress."""
     from flexmoe.runtime.partial_plan import PartialPlan
 
+    backend = backend or BenchmarkBackend()
     if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,95}", run_dir.name):
         raise ValueError("run ID must be a short path-free identifier")
     run_dir.mkdir(parents=True, exist_ok=False)
@@ -651,15 +728,11 @@ def run_benchmark(
         "repetitions": [],
         "repetitions_completed": 0,
         "smoke_matches_resident": None,
+        **backend.summary_fields(),
     }
     atomic_json(run_dir / "summary.json", summary)
     try:
-        workload = load_partial_workload(
-            config.dataset_path,
-            config.dataset_manifest,
-            config.batch_size,
-            config.context_length,
-        )
+        workload = backend.workload(config)
         model_config = read_json(config.model_path / "config.json")
         text_config = model_config.get("text_config", model_config)
         total_layers = text_config["num_hidden_layers"]
@@ -675,7 +748,7 @@ def run_benchmark(
         if config.arm == "partial-fixed-kv" and reference is None:
             raise ValueError("partial-fixed-kv requires --resident-run")
         kv_bytes = (
-            resident_kv_budget(reference["memory"], config.tensor_parallel_size)
+            backend.kv_budget(reference["memory"], config.tensor_parallel_size)
             if config.arm == "partial-fixed-kv" and reference
             else None
         )
@@ -696,7 +769,7 @@ def run_benchmark(
                 str(config.model_path.resolve()).encode()
             ).hexdigest(),
         }
-        _configure_environment(config, project_root, plan.offload_layers)
+        backend.configure(config, project_root, plan.offload_layers)
         vllm = importlib.import_module("vllm")
         torch = importlib.import_module("torch")
         versions = {
@@ -725,16 +798,22 @@ def run_benchmark(
             "versions": versions,
             "warmups": config.warmups,
             "timing_samples": config.timing_samples,
+            "max_num_seqs": config.max_num_seqs,
+            "max_num_batched_tokens": config.max_num_batched_tokens,
+            "repetitions_requested": config.repetitions,
             "smoke_output_length": min(
                 config.smoke_output_length, config.output_length
             ),
+            **backend.contract_fields(),
         }
         summary.update({"contract": contract, "engine_policy": policy})
         if reference is not None:
             validate_contract(contract, reference["contract"])
             summary["resident_run_id"] = reference["run_id"]
         workers = config.tensor_parallel_size
-        _snapshot(engine, workers)
+        initial_stats = backend.snapshot(engine, workers)
+        backend.validate_initial(initial_stats, config)
+        summary[backend.stats_key] = initial_stats
         memory = _memory(engine, workers)
         validate_fixed_kv(memory, memory, workers)
         summary["memory"] = memory
@@ -753,7 +832,7 @@ def run_benchmark(
             if config.arm == "partial-fixed-kv":
                 validate_fixed_kv(memory, reference["memory"], workers)
         atomic_json(run_dir / "summary.json", summary)
-        smoke_prompts = [{"prompt_token_ids": list(workload.prompts[0][:1024])}]
+        smoke_prompts = [{"prompt_token_ids": list(backend.smoke_tokens(workload))}]
         smoke_length = min(config.smoke_output_length, config.output_length)
 
         def sampling(length: int) -> Any:
@@ -766,18 +845,16 @@ def run_benchmark(
                 detokenize=False,
             )
 
-        _snapshot(engine, workers)
+        backend.snapshot(engine, workers)
         started = perf_counter()
         smoke_outputs = engine.generate(
             smoke_prompts, sampling(smoke_length), use_tqdm=False
         )
         engine.collective_rpc("fluxmoe_synchronize")
         smoke_elapsed = perf_counter() - started
-        smoke_stats = _snapshot(engine, workers, synchronize=False)
+        smoke_stats = backend.snapshot(engine, workers, synchronize=False)
         if config.arm != "resident":
-            validate_partial_mechanism(
-                smoke_stats, plan.offload_layers, config.staging_slots, workers
-            )
+            backend.validate(smoke_stats, config, plan.offload_layers)
             summary["mechanism_validated"] = True
         smoke = summarize_outputs(
             smoke_outputs,
@@ -805,12 +882,13 @@ def run_benchmark(
         first_hash: str | None = None
         stable = True
         for repetition in range(config.repetitions):
-            before = _snapshot(engine, workers, reset_timing=True)
+            before = backend.snapshot(engine, workers, reset_timing=True)
+            backend.before_measurement(engine, workers)
             started = perf_counter()
             outputs = engine.generate(prompts, params, use_tqdm=False)
             engine.collective_rpc("fluxmoe_synchronize")
             elapsed = perf_counter() - started
-            after = _snapshot(engine, workers, synchronize=False)
+            after = backend.snapshot(engine, workers, synchronize=False)
             result = summarize_outputs(
                 outputs,
                 request_count=config.batch_size,
@@ -820,23 +898,27 @@ def run_benchmark(
             result.update(
                 {
                     "repetition": repetition,
-                    "diagnostics": worker_deltas(
+                    "diagnostics": backend.deltas(
                         before, after, expected_workers=workers
                     ),
+                    **backend.measurement_fields(engine, workers),
                 }
             )
-            if plan.offload_layers and any(
-                row["h2d_bytes"] <= 0
-                or row["copy_launches"] <= 0
-                or row["offload_forwards"] <= 0
-                for row in result["diagnostics"]["per_rank"]
+            if (
+                backend.requires_layer_transfers
+                and plan.offload_layers
+                and any(
+                    row["h2d_bytes"] <= 0
+                    or row["copy_launches"] <= 0
+                    or row["offload_forwards"] <= 0
+                    for row in result["diagnostics"]["per_rank"]
+                )
             ):
                 raise RuntimeError(
                     "measured repetition has no per-rank offload mechanism evidence"
                 )
-            result["timing_available"] = (
-                result["diagnostics"]["timing"]["sample_count"] > 0
-            )
+            backend.validate_repetition(result["diagnostics"], config)
+            result["timing_available"] = backend.timing_available(result["diagnostics"])
             if first_hash is None:
                 first_hash = result["output_sha256"]
             stable = stable and result["output_sha256"] == first_hash
@@ -846,7 +928,7 @@ def run_benchmark(
             summary["performance_outputs_stable"] = stable
             atomic_json(run_dir / "summary.json", summary)
         summary["final_memory"] = _memory(engine, workers)
-        summary["partial_stats"] = _snapshot(engine, workers)
+        summary[backend.stats_key] = backend.snapshot(engine, workers)
         throughputs = [
             row["output_tokens_per_second"] for row in summary["repetitions"]
         ]

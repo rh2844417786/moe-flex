@@ -44,6 +44,10 @@ GitHub，服务器从公开仓库拉取后，在 4 张独占 NVIDIA H100 80GB PC
 
 ## Mac 验证
 
+新增 opt-in BF16 专家缓存入口见 [expert-cache-runbook](docs/expert-cache-runbook.md)，
+可直接交给服务器 Codex 的指令见 [server-codex-expert-cache-prompt](docs/server-codex-expert-cache-prompt.md)。
+该后端的 H100 正确性与吞吐仍待实机验证；原有 partial-host 入口继续可用。
+
 新增的部分 BF16 卸载路径将大多数层维持原生 GPU 常驻，只对选定少数层使用
 连续 pinned CPU 权重和固定 CUDA staging slots。它在热路径不使用 Huffman
 解压或 VMM 重映射；实际吞吐收益尚待 H100 验证。三组实验比较 resident、

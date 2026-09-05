@@ -61,6 +61,8 @@ def worker_memory_stats(worker: object) -> dict[str, object]:
         "free_gpu_bytes": free,
         "torch_allocated_bytes": torch.cuda.memory_allocated(device),
         "torch_reserved_bytes": torch.cuda.memory_reserved(device),
+        "torch_peak_allocated_bytes": torch.cuda.max_memory_allocated(device),
+        "torch_peak_reserved_bytes": torch.cuda.max_memory_reserved(device),
         "available_kv_cache_bytes": available,
         "kv_cache_allocated_bytes": actual,
         "kv_cache_declared_bytes": declared,

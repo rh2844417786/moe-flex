@@ -1070,6 +1070,12 @@ class FluxMoEWorkerExtension:
 
         return worker_memory_stats(self)
 
+    def fluxmoe_reset_memory_peaks(self) -> int:
+        """Begin an explicit measured memory interval on this worker's device."""
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
+        return int(getattr(self, "rank", 0))
+
 
 def _total_layers_from_model_path() -> int:
     model_path = os.environ.get("FLUXMOE_MODEL_PATH")

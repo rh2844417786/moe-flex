@@ -35,6 +35,8 @@ def test_manual_kv_budget_and_real_allocations_remain_separate(
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda *_: (600, 1000))
     monkeypatch.setattr(torch.cuda, "memory_allocated", lambda *_: 300)
     monkeypatch.setattr(torch.cuda, "memory_reserved", lambda *_: 350)
+    monkeypatch.setattr(torch.cuda, "max_memory_allocated", lambda *_: 410)
+    monkeypatch.setattr(torch.cuda, "max_memory_reserved", lambda *_: 460)
     raw = torch.zeros(100, dtype=torch.uint8)
     worker = SimpleNamespace(
         rank=0,
@@ -53,5 +55,19 @@ def test_manual_kv_budget_and_real_allocations_remain_separate(
     assert stats["kv_cache_allocated_bytes"] == 100
     assert stats["num_gpu_blocks"] == 5
     assert stats["kv_cache_accounting_consistent"] is True
+    assert stats["torch_peak_allocated_bytes"] == 410
+    assert stats["torch_peak_reserved_bytes"] == 460
     worker.model_runner.kv_cache_config.kv_cache_tensors[0].size = 101
     assert worker_memory_stats(worker)["kv_cache_accounting_consistent"] is False
+
+
+def test_peak_reset_synchronizes_before_reset(monkeypatch):
+    actions = []
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: actions.append("sync"))
+    monkeypatch.setattr(
+        torch.cuda, "reset_peak_memory_stats", lambda: actions.append("reset")
+    )
+    worker = FluxMoEWorkerExtension()
+    worker.rank = 0
+    assert worker.fluxmoe_reset_memory_peaks() == 0
+    assert actions == ["sync", "reset"]

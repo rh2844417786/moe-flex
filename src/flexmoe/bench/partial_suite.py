@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib.util
 import json
 import math
 import os
@@ -30,6 +31,8 @@ MEMORY_FIELDS = (
     "free_gpu_bytes",
     "torch_allocated_bytes",
     "torch_reserved_bytes",
+    "torch_peak_allocated_bytes",
+    "torch_peak_reserved_bytes",
     "available_kv_cache_bytes",
     "model_memory_bytes",
     "kv_cache_allocated_bytes",
@@ -55,6 +58,18 @@ REPETITION_FIELDS = (
     "ttft_median_s",
     "request_latency_median_s",
 )
+
+
+def sibling_module(name: str) -> Any:
+    """Load a stdlib-only helper without executing flexmoe.__init__ on the host."""
+    spec = importlib.util.spec_from_file_location(
+        name, Path(__file__).with_name(name + ".py")
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(name)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 @dataclass(frozen=True)
@@ -225,6 +240,9 @@ def public_run(raw: Mapping[str, Any]) -> dict[str, Any]:
                 "seed",
                 "warmups",
                 "timing_samples",
+                "max_num_seqs",
+                "max_num_batched_tokens",
+                "repetitions_requested",
                 "smoke_output_length",
                 "source_request_count",
                 "unique_selected_request_count",
@@ -311,6 +329,8 @@ def public_run(raw: Mapping[str, Any]) -> dict[str, Any]:
         }
         for row in raw.get("partial_stats", [])
     ]
+    if raw.get("storage_backend") in ("native", "expert-cache"):
+        sibling_module("expert_cache_evidence").extend_public_run(raw, result)
     return result
 
 
@@ -398,7 +418,9 @@ def analyze_triplet(
             for row in runs[1:]
         ):
             raise ValueError("physical GPU memory budget differs")
-        if (
+        if resident["contract"].get("comparison_backend") == "expert-cache":
+            sibling_module("expert_cache_evidence").validate_triplet(runs)
+        elif (
             fixed.get("offload_count", 0) <= 0
             or fixed.get("offload_layers") != auto.get("offload_layers")
             or fixed.get("staging_slots") != auto.get("staging_slots")
@@ -592,7 +614,9 @@ def export_suite(source: Path, output: Path) -> dict[str, Any]:
     output.mkdir(parents=True, exist_ok=False)
     # An export may be repeated from a suite that already contains its
     # generated public package; that package is not a benchmark run.
-    paths = [path for path in source.glob("*/summary.json") if path.parent.name != "public"]
+    paths = [
+        path for path in source.glob("*/summary.json") if path.parent.name != "public"
+    ]
     runs = [public_run(_read(path)) for path in sorted(paths)]
     if not runs:
         raise ValueError("suite has no run summaries")
