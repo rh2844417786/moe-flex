@@ -70,6 +70,10 @@ sanity 的 batch1 smoke 失败、CUDA 错误、OOM、invalid mechanism 或超时
 
 计数只对累计量做差：resident hits、cold hits/misses、admission/eviction/bypass、各类 H2D/D2D、逐层 forwards/demands 与计时。占用量、最大覆盖、策略 hit ratio 等 gauge 单独记录 snapshot；measured cold hit ratio 用该轮 hits 与 misses 重算。H2D=0 可以有效，需同时满足 demand、layout、identity 与 executed forward 检查。校准/startup/warmup 不混入 measured transfer delta。CUDA 计时为抽样，不能替代端到端输出吞吐。
 
+`--timing-samples N` 控制待完成 CUDA 采样 event 组的容量，默认128；这不是整个运行的累计采样次数上限。仍按每31个 layer forward 抽样并回收已完成 event。设为0通过 `FLUXMOE_EXPERT_TIMING_SAMPLES=0` 禁用 CUDA 抽样，CPU 计时与端到端计时保留；worker 实际 `cuda_timing_capacity` 必须与请求匹配。R/B/C 使用相同请求值；native R 的 cache timing 为明确的零对照。完整证据校验允许零 sample/零 CUDA duration，但拒绝缺失 timing 字段、正 duration 却零 samples 或被禁用的采样仍产生 samples。
+
+比较/导出还会强制核验每轮完整的4个 rank、恰好 L 个逐层 forward/demand/coverage 值、各 rank 与 aggregate 的逐个累计整数计数相等、GPU timing 合计，以及实际 KV 和 allocator peak。缺失字段不能被空字典或截短数组代替；不完整证据不产生 gain。
+
 每轮计时前，所有 worker 同步并 reset allocator peaks；结束计时后读取该轮 `torch_peak_allocated_bytes` / `torch_peak_reserved_bytes` 与实际 KV。起始 memory 的 peak 是此前 allocator 生命周期峰值，包含 profiling；per-repetition peak 的明确 scope 为 `measured-generate-after-synchronized-reset`。Torch allocator peak 不等于整个设备或 NCCL/non-Torch 总峰值，仍需结合 total/free/current 与真实 OOM 行为。
 
 `weights_verified=0` 是事实：runtime 不做大权重 D2H 校验。CUDA 测试覆盖小型专家的 BF16 位级映射与 fused output；真实模型的严格 gate 是相同 full-prompt、batch=1 greedy 输出哈希。性能批量哈希单独报告，不一致时不得声称高批量输出等价。profile SHA 为规范化 `ExpertProfile.to_dict()` 的 canonical JSON SHA；模型身份是 config/index/路径 SHA，未重读所有 checkpoint weight bytes。

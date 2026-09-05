@@ -397,6 +397,8 @@ def execute_suite(args: argparse.Namespace) -> Path:
             "cuda-check",
             "--timeout-s",
             str(args.timeout_s),
+            "--model-path",
+            str(args.model_path),
             "--output",
             str(source / "cuda-preflight.json"),
         ],

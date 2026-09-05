@@ -474,6 +474,46 @@ def test_pending_cuda_samples_reject_reset_without_losing_cpu_timing(monkeypatch
     assert pool.stats()["timing"] == before
 
 
+@pytest.mark.parametrize("capacity", [0, 1, 3])
+def test_cuda_sampling_capacity_controls_pending_events_and_zero_disables(
+    monkeypatch, capacity
+):
+    from types import SimpleNamespace
+
+    from flexmoe.runtime.expert_pool import CudaPoolBackend
+
+    created = []
+
+    class Event:
+        def __init__(self, **kwargs):
+            created.append(self)
+
+        def record(self, stream):
+            pass
+
+        def query(self):
+            return False
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "Event", Event)
+    monkeypatch.setattr(torch.cuda, "current_stream", lambda device: SimpleNamespace())
+    backend = CudaPoolBackend(0, timing_capacity=capacity)
+    for _ in range(31 * 10):
+        backend.begin()
+        for stage in range(4):
+            backend.mark(stage)
+    assert len(created) == capacity * 4
+    assert backend.timing_capacity == capacity
+
+
+@pytest.mark.parametrize("capacity", [-1, True, 1.5])
+def test_cuda_sampling_capacity_rejects_malformed_values_before_device_use(capacity):
+    from flexmoe.runtime.expert_pool import CudaPoolBackend
+
+    with pytest.raises(ValueError, match="capacity"):
+        CudaPoolBackend(0, timing_capacity=capacity)
+
+
 @pytest.mark.parametrize("mismatch", ["path", "model_type", "geometry"])
 def test_runtime_rejects_actual_model_mismatch_before_allocation(
     monkeypatch, tmp_path, mismatch
@@ -553,3 +593,60 @@ def test_calibration_rejects_actual_model_path_mislabel(monkeypatch, tmp_path):
     with pytest.raises(ValueError, match="actual model"):
         worker.fluxmoe_expert_calibration("start")
     reset_calibration()
+
+
+@pytest.mark.parametrize("capacity", [0, 7])
+def test_registry_consumes_environment_sampling_capacity_and_reports_actual(
+    monkeypatch, tmp_path, capacity
+):
+    import sys
+    from types import SimpleNamespace
+
+    from test_expert_cache_bench import identity
+
+    from flexmoe.runtime.expert_profile import ExpertProfile
+    from flexmoe.vllm import expert_cache
+
+    model, ident = identity(tmp_path)
+    fields = json.loads((model / "config.json").read_text())
+    config = SimpleNamespace(
+        model_config=SimpleNamespace(
+            model=str(model), hf_config=SimpleNamespace(**fields), enforce_eager=True
+        ),
+        compilation_config=SimpleNamespace(level=0, custom_ops=["all"]),
+        parallel_config=SimpleNamespace(pipeline_parallel_size=1, data_parallel_size=1),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm.config",
+        SimpleNamespace(get_current_vllm_config=lambda: config),
+    )
+    profile = ExpertProfile.from_dict(
+        {
+            "schema_version": 1,
+            **ident,
+            "calibration_input_hashes": ["c" * 64],
+            "counts": [[1] * 8, [1] * 8],
+            "forward_counts": [1, 1],
+        }
+    )
+    path = tmp_path / "profile.json"
+    path.write_text(json.dumps(profile.to_dict()))
+    for key, value in {
+        "FLUXMOE_MODEL_PATH": model,
+        "FLUXMOE_EXPERT_PROFILE_PATH": path,
+        "FLUXMOE_RESIDENT_RATIO": 0.25,
+        "FLUXMOE_CACHE_SLOTS": 1,
+        "FLUXMOE_EXPERT_TIMING_SAMPLES": capacity,
+    }.items():
+        monkeypatch.setenv(key, str(value))
+
+    class Backend(TensorBackend):
+        def __init__(self, device, *, timing_capacity=128):
+            self.timing_capacity = timing_capacity
+
+    monkeypatch.setattr(expert_cache, "CudaPoolBackend", Backend)
+    monkeypatch.setattr(expert_cache, "_REGISTRY", None)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    registry = expert_cache.registry_for_layer(SimpleNamespace(tp_size=4, tp_rank=0), 8)
+    assert registry.stats()["cuda_timing_capacity"] == capacity

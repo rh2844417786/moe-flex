@@ -31,6 +31,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--project-root", type=Path, default=Path.cwd())
+    parser.add_argument("--model-path", type=Path, required=True)
     args = parser.parse_args()
     root = args.project_root.resolve()
     if not args.output.resolve().is_relative_to(root):
@@ -39,6 +40,10 @@ def main() -> int:
         raise FileExistsError("preflight evidence already exists; choose a fresh suite")
     result: dict[str, Any] = {"schema_version": 1, "status": "failed"}
     try:
+        from flexmoe.vllm.expert_calibration import model_profile_identity
+
+        # The wrapper's checkpoint/exclusivity preflight checks this same path.
+        result["identity"] = model_profile_identity(args.model_path, 4)
         import pytest
         import torch
         import vllm  # type: ignore[import-not-found]

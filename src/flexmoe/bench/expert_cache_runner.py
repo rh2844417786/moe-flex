@@ -186,6 +186,7 @@ class ExpertBackend(shared.BenchmarkBackend):
             config.model_path, config.tensor_parallel_size
         )
         self.settings = {
+            "timing_samples": config.timing_samples,
             "resident_ratio": self.resident_ratio,
             "cache_slots": self.cache_slots,
             "cache_policy": self.cache_policy,
@@ -223,6 +224,7 @@ class ExpertBackend(shared.BenchmarkBackend):
                 "FLUXMOE_RESIDENT_RATIO": str(self.resident_ratio),
                 "FLUXMOE_CACHE_SLOTS": str(self.cache_slots),
                 "FLUXMOE_CACHE_POLICY": self.cache_policy,
+                "FLUXMOE_EXPERT_TIMING_SAMPLES": str(config.timing_samples),
             }
         )
 

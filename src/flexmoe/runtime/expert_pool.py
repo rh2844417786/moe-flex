@@ -33,10 +33,13 @@ class CudaPoolBackend:
 
     pin_memory = True
 
-    def __init__(self, device: int) -> None:
+    def __init__(self, device: int, *, timing_capacity: int = 128) -> None:
+        if type(timing_capacity) is not int or timing_capacity < 0:
+            raise ValueError("CUDA timing capacity must be a nonnegative integer")
         if not torch.cuda.is_available() or torch.version.hip is not None:
             raise ValueError("expert cache requires NVIDIA CUDA")
         self.device = torch.device("cuda", device)
+        self.timing_capacity = timing_capacity
         self._done: torch.cuda.Event | None = None
         self._uploaded: torch.cuda.Event | None = None
         self._samples: deque[list[torch.cuda.Event]] = deque()
@@ -54,7 +57,9 @@ class CudaPoolBackend:
         self._sample = (
             []
             if should_sample_upload(
-                self._forward_serial, capacity=128, pending_count=len(self._samples)
+                self._forward_serial,
+                capacity=self.timing_capacity,
+                pending_count=len(self._samples),
             )
             else None
         )

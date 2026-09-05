@@ -46,6 +46,8 @@ bash scripts/server/run_expert_cache.sh confirm \
 
 解释结果时，R 是原生常驻；B 按 R 的实际 KV bytes/blocks 固定；C 在与 R 相同 GPU budget 下扩 KV。检查 B/R、C/B、C/R 和真实 KV 增量，报告每轮实际 token 数与秒数。每轮 per-rank allocator peaks 在计时前同步重置；检查真实显存数据并说明 Torch peak 不含全部非 Torch/NCCL 内存。保留完整嵌套 counters、逐层 delta/coverage、真实 kernel configurations 和 runtime weights_verified=0；不得伪造全模型 GPU 权重验证。H2D=0 在全命中时合法，但命中率不等于吞吐收益。高批量输出哈希与 batch1 correctness scope 分开报告。
 
+`--timing-samples` 是待完成 CUDA 采样 event 组容量（默认128，每31个 layer forward 抽样并回收）；0禁用 CUDA 抽样但保留 CPU/端到端计时。所有 arms 请求一致，检查 worker 实际 `cuda_timing_capacity`。自定义 `--model-path` 会一并传给 CUDA-check 与 checkpoint preflight，不需要默认模型目录存在。
+
 无论正结果、负结果、失败还是超时，都导出每个已尝试的 suite，用新目录：
 
 ```bash

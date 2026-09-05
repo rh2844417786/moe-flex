@@ -166,6 +166,7 @@ def cache_row(rank=0):
             )
         },
         "weights_verified": 0,
+        "cuda_timing_capacity": 128,
         "failed": False,
         "identity": {
             "geometry": {
@@ -228,12 +229,15 @@ def test_native_control_never_calls_uninitialized_cache_rpc(tmp_path, monkeypatc
 
     model, _ = identity(tmp_path)
     data, manifest = inputs(tmp_path)
-    cfg = PartialRunConfig("resident", model, data, manifest, context_length=2)
+    cfg = PartialRunConfig(
+        "resident", model, data, manifest, context_length=2, timing_samples=7
+    )
     monkeypatch.setattr(os, "environ", os.environ.copy())
     backend = runner().ExpertBackend(cfg, tmp_path / "unused", 0.25, 1, "lru", 1)
     backend.configure(cfg, tmp_path, ())
     assert os.environ["FLUXMOE_ENABLE"] == "0"
     assert os.environ["FLUXMOE_STORAGE_MODE"] == "expert-cache"
+    assert os.environ["FLUXMOE_EXPERT_TIMING_SAMPLES"] == "7"
 
     class Engine:
         def collective_rpc(self, *args, **kwargs):

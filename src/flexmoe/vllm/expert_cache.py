@@ -355,6 +355,7 @@ class ExpertCacheRegistry:
             "cache_policy": self.cache_policy,
             "resident_ratio": self.resident_ratio,
             "profile_sha256": self.profile_sha256,
+            "cuda_timing_capacity": getattr(self.pool.backend, "timing_capacity", 0),
             "kernel_config_scope": "native logical E geometry per actual native chunk size",
             "kernel_config_records": self.kernel_configs.snapshot(),
             "transfer_schedule": "demand-critical H2D on compute stream; no speculative prefetch",
@@ -397,7 +398,12 @@ def registry_for_layer(layer: torch.nn.Module, num_experts: int) -> ExpertCacheR
             resident_ratio=float(os.environ["FLUXMOE_RESIDENT_RATIO"]),
             cache_slots=int(os.environ["FLUXMOE_CACHE_SLOTS"]),
             policy=os.environ.get("FLUXMOE_CACHE_POLICY", "decayed-lfu"),
-            backend=CudaPoolBackend(torch.cuda.current_device()),
+            backend=CudaPoolBackend(
+                torch.cuda.current_device(),
+                timing_capacity=int(
+                    os.environ.get("FLUXMOE_EXPERT_TIMING_SAMPLES", "128")
+                ),
+            ),
         )
     if _REGISTRY.num_experts != num_experts:
         raise IntegrityError("expert count differs from startup profile")

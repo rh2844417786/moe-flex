@@ -62,6 +62,7 @@ CAPACITY = (
     "pinned_metadata_bytes",
     "net_freed_bytes",
     "weights_verified",
+    "cuda_timing_capacity",
 )
 ARRAYS = (
     "forward_counts",
@@ -125,6 +126,7 @@ def public_settings(raw: Mapping[str, Any]) -> dict[str, Any]:
         "cache_policy": policy,
         "cache_slots": number(raw["cache_slots"], integer=True),
         "calibration_count": number(raw["calibration_count"], integer=True),
+        "timing_samples": number(raw["timing_samples"], integer=True),
         "profile_sha256": hash_value(raw["profile_sha256"]),
         "identity": public_identity(raw["identity"]),
     }
@@ -213,7 +215,9 @@ def ranked(raw: object, workers: int) -> list[dict[str, Any]]:
         or any(not isinstance(x, dict) for x in raw)
     ):
         raise ValueError("cache worker coverage incomplete")
-    if {x.get("rank") for x in raw} != set(range(workers)):
+    if any(type(x.get("rank")) is not int for x in raw) or {
+        x.get("rank") for x in raw
+    } != set(range(workers)):
         raise ValueError("cache worker ranks differ")
     return sorted(raw, key=lambda x: x["rank"])
 
@@ -332,6 +336,7 @@ def validate_stats(
             "pinned_metadata_bytes": experts * 12,
             "net_freed_bytes": (layers * experts - slots) * expert_bytes - experts * 12,
             "weights_verified": 0,
+            "cuda_timing_capacity": settings["timing_samples"],
             "failed": False,
             **{
                 key: settings[key]
@@ -371,6 +376,8 @@ def validate_triplet(runs: tuple[Mapping[str, Any], ...]) -> None:
     if runs[0].get("storage_backend") != "native":
         raise ValueError("R must use native resident storage")
     workers = runs[0]["contract"]["tensor_parallel_size"]
+    for run in runs:
+        validate_run_measurements(run)
     for native_row in ranked(runs[0]["expert_cache_stats"], workers):
         if native_row.get("storage_backend") != "native" or any(
             native_row.get(key) != 0 for key in COUNTERS
@@ -380,14 +387,203 @@ def validate_triplet(runs: tuple[Mapping[str, Any], ...]) -> None:
         if row.get("storage_backend") != "expert-cache":
             raise ValueError("B/C must use expert cache storage")
         validate_stats(row["expert_cache_stats"], settings, workers)
-        expert_bytes = row["expert_cache_stats"][0]["expert_bytes"]
-        for rep in row["repetitions"]:
-            for delta in ranked(rep["diagnostics"]["per_rank"], workers):
-                if not delta.get("forward_counts") or not all(
-                    x > 0 for x in delta["forward_counts"]
+
+
+MEASURED_MEMORY = (
+    "rank",
+    "total_gpu_bytes",
+    "free_gpu_bytes",
+    "torch_allocated_bytes",
+    "torch_reserved_bytes",
+    "torch_peak_allocated_bytes",
+    "torch_peak_reserved_bytes",
+    "kv_cache_allocated_bytes",
+    "kv_cache_declared_bytes",
+    "num_gpu_blocks",
+)
+
+
+def _required_numbers(
+    raw: Mapping[str, Any], fields: tuple[str, ...], *, integer: bool = False
+) -> None:
+    for field in fields:
+        if field not in raw:
+            raise ValueError("required measured evidence is missing")
+        number(raw[field], integer=integer)
+
+
+def _layer_array(
+    raw: Mapping[str, Any], field: str, layers: int, *, integer: bool = True
+) -> list[Any]:
+    value = raw.get(field)
+    if not isinstance(value, list) or len(value) != layers:
+        raise ValueError("measured per-layer evidence has incorrect length")
+    for item in value:
+        number(item, integer=integer)
+    return value
+
+
+def _hit_ratio(policy: Mapping[str, Any]) -> None:
+    hits, misses = policy["cache_hits"], policy["cache_misses"]
+    expected = hits / (hits + misses) if hits + misses else None
+    if "cache_hit_ratio" not in policy or policy["cache_hit_ratio"] != expected:
+        raise ValueError("measured cold hit ratio differs from counts")
+
+
+def _kernel_evidence(raw: Mapping[str, Any]) -> None:
+    _required_numbers(raw, ("capacity", "unrecorded_selections"), integer=True)
+    records = raw.get("records")
+    if (
+        raw["capacity"] <= 0
+        or not isinstance(records, list)
+        or not 0 < len(records) <= raw["capacity"]
+    ):
+        raise ValueError("measured kernel evidence missing")
+    for record in records:
+        _required_numbers(record, ("chunk_tokens", "top_k", "selections"), integer=True)
+        if any(record[key] <= 0 for key in ("chunk_tokens", "top_k", "selections")):
+            raise ValueError("measured kernel execution count is invalid")
+        for field in ("w13_shape", "w2_shape"):
+            if any(x <= 0 for x in _layer_array(record, field, 3)):
+                raise ValueError("measured kernel shape is invalid")
+        if not isinstance(record.get("config"), dict) or not record["config"]:
+            raise ValueError("selected kernel config is missing")
+    public_stats({"kernel_config_records": raw})
+
+
+def validate_run_measurements(run: Mapping[str, Any]) -> None:
+    contract = run["contract"]
+    settings = public_settings(contract["expert_cache"])
+    geometry = settings["identity"]["geometry"]
+    workers, layers, experts = (
+        contract["tensor_parallel_size"],
+        geometry["total_layers"],
+        geometry["num_experts"],
+    )
+    expert_bytes = 6 * geometry["hidden_size"] * geometry["intermediate_size"]
+    native = run.get("storage_backend") == "native"
+    if contract.get("timing_samples") != settings["timing_samples"]:
+        raise ValueError("requested CUDA sampling capacity differs")
+    reference_memory = ranked(run["memory"], workers)
+    for rep in run["repetitions"]:
+        if rep.get("memory_peak_scope") != "measured-generate-after-synchronized-reset":
+            raise ValueError("measured memory peak scope is unavailable")
+        for memory, original in zip(
+            ranked(rep.get("memory"), workers), reference_memory
+        ):
+            _required_numbers(memory, MEASURED_MEMORY, integer=True)
+            if (
+                memory.get("kv_cache_accounting_consistent") is not True
+                or memory["kv_cache_declared_bytes"]
+                != memory["kv_cache_allocated_bytes"]
+                or memory["torch_allocated_bytes"] < memory["kv_cache_allocated_bytes"]
+                or any(
+                    memory[key] <= 0 or memory[key] != original.get(key)
+                    for key in (
+                        "kv_cache_allocated_bytes",
+                        "num_gpu_blocks",
+                        "total_gpu_bytes",
+                    )
+                )
+                or not memory["torch_allocated_bytes"]
+                <= memory["torch_peak_allocated_bytes"]
+                <= memory["torch_peak_reserved_bytes"]
+                <= memory["total_gpu_bytes"]
+                or not memory["torch_allocated_bytes"]
+                <= memory["torch_reserved_bytes"]
+                <= memory["torch_peak_reserved_bytes"]
+                or memory["free_gpu_bytes"] > memory["total_gpu_bytes"]
+            ):
+                raise ValueError("measured memory accounting differs")
+        total = rep["diagnostics"]
+        per_rank = ranked(total.get("per_rank"), workers)
+        for row in [total, *per_rank]:
+            _required_numbers(row, COUNTERS, integer=True)
+            _required_numbers(row["policy"], POLICY_COUNTERS, integer=True)
+            _required_numbers(row["timing"], TIMINGS)
+            number(row["timing"]["cuda_sample_count"], integer=True)
+            if (
+                settings["timing_samples"] == 0
+                and row["timing"]["cuda_sample_count"] != 0
+            ):
+                raise ValueError("CUDA sampling must be disabled at zero capacity")
+            _hit_ratio(row["policy"])
+            if row["timing"]["cuda_sample_count"] == 0 and any(
+                row["timing"][key] != 0
+                for key in ("load_cuda_s", "compute_cuda_s", "promotion_cuda_s")
+            ):
+                raise ValueError("CUDA durations exist without measured samples")
+            if native and any(row[key] != 0 for key in COUNTERS):
+                raise ValueError("native measured control counters must be zero")
+        for row in per_rank:
+            if native:
+                if any(row["policy"][key] != 0 for key in POLICY_COUNTERS) or any(
+                    row["timing"][key] != 0 for key in TIMINGS
                 ):
-                    raise ValueError("measured per-layer forwards missing")
-                validate_demand(delta, expert_bytes)
+                    raise ValueError(
+                        "native cache control must have zero policy/timing"
+                    )
+                continue
+            forwards = _layer_array(row, "forward_counts", layers)
+            demands = _layer_array(row, "per_layer_unique_demands", layers)
+            coverage = _layer_array(
+                row, "per_layer_mean_unique_coverage", layers, integer=False
+            )
+            if (
+                not all(forwards)
+                or sum(demands) != row["unique_demands"]
+                or row["policy"]["unique_demands"] != row["unique_demands"]
+                or row["policy"]["observations"] != sum(forwards)
+                or any(
+                    not 0 <= demand <= count * experts
+                    or actual != demand / count / experts
+                    for demand, count, actual in zip(demands, forwards, coverage)
+                )
+            ):
+                raise ValueError("measured layer demand accounting differs")
+            validate_demand(row, expert_bytes)
+            gauges = row["gauge_snapshot"]
+            maxima = _layer_array(gauges, "per_layer_max_unique_per_forward", layers)
+            _required_numbers(gauges, ("max_unique_per_forward",), integer=True)
+            _required_numbers(gauges, ("mean_unique_coverage",))
+            if (
+                not 0 <= gauges["mean_unique_coverage"] <= 1
+                or gauges["max_unique_per_forward"] != max(maxima)
+                or any(
+                    maximum > experts or maximum * count < demand
+                    for maximum, count, demand in zip(maxima, forwards, demands)
+                )
+            ):
+                raise ValueError("measured coverage gauges differ")
+            snapshot = row["policy_snapshot"]
+            _required_numbers(snapshot, POLICY_GAUGES[:-1], integer=True)
+            number(snapshot["cache_hit_ratio"])
+            if (
+                snapshot["cache_slots"] != settings["cache_slots"]
+                or snapshot["cache_entries"] > snapshot["cache_slots"]
+                or snapshot["resident_experts"]
+                != layers * math.floor(experts * settings["resident_ratio"])
+                or snapshot["cache_hit_ratio"] > 1
+            ):
+                raise ValueError("measured policy gauges differ")
+            _kernel_evidence(row["kernel_config_records"])
+        for key in COUNTERS:
+            if total[key] != sum(row[key] for row in per_rank):
+                raise ValueError("measured aggregate counter differs from ranks")
+        for group, fields in (("policy", POLICY_COUNTERS), ("timing", TIMINGS)):
+            for key in fields:
+                actual = sum(row[group][key] for row in per_rank)
+                equal = (
+                    total[group][key] == actual
+                    if group == "policy" or key == "cuda_sample_count"
+                    else math.isclose(
+                        total[group][key], actual, rel_tol=1e-12, abs_tol=1e-12
+                    )
+                )
+                if not equal:
+                    raise ValueError(
+                        "measured aggregate policy/timing differs from ranks"
+                    )
 
 
 def public_diagnostics(raw: Mapping[str, Any]) -> dict[str, Any]:
@@ -427,6 +623,8 @@ def public_diagnostics(raw: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def extend_public_run(raw: Mapping[str, Any], out: dict[str, Any]) -> None:
+    if raw.get("status") == "complete" or raw.get("repetitions"):
+        validate_run_measurements(raw)
     out["storage_backend"] = raw["storage_backend"]
     source = raw.get("contract", {})
     if source.get("comparison_backend") == "expert-cache":
@@ -467,11 +665,17 @@ def extend_public_run(raw: Mapping[str, Any], out: dict[str, Any]) -> None:
                     "torch_peak_reserved_bytes",
                     "kv_cache_allocated_bytes",
                     "num_gpu_blocks",
+                    "kv_cache_declared_bytes",
                 ),
                 integer=True,
             )
             for row in old.get("memory", [])
         ]
+        for original, clean in zip(old.get("memory", []), new["memory"]):
+            if type(original.get("kv_cache_accounting_consistent")) is bool:
+                clean["kv_cache_accounting_consistent"] = original[
+                    "kv_cache_accounting_consistent"
+                ]
         if old.get("memory_peak_scope") == "measured-generate-after-synchronized-reset":
             new["memory_peak_scope"] = old["memory_peak_scope"]
 
