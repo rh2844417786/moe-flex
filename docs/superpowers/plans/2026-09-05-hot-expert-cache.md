@@ -2,13 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**实现状态（2026-09-05）：** 下方为保留的原始实施清单，代码实现及专项/整体审查已完成。本地验证 295 passed、6 skipped，Ruff/Mypy 与 wheel 构建通过。CUDA/H100 正确性和吞吐尚未验证，后续执行以 `docs/server-codex-expert-cache-prompt.md` 为准，不重复从此计划重写代码。
+
 **Goal:** 实现可调热专家驻留、跨层共享持久缓存和完整离线 H100 实验入口。
 
 **Architecture:** CPU 纯策略/校准模型与 tensor/stream 运行时分离。连续 GPU 专家池由原生 vLLM fused_experts 的 expert_map 访问；原路由不变。扩展现有 benchmark 的 backend 选择，保留 R/B/C、隐私导出和真实 KV 验证。
 
 **Tech Stack:** Python 3.10+、PyTorch 2.8.0、vLLM 0.10.2 固定 commit、pytest、原有离线 Docker。
 
-**Spec:** docs/superpowers/specs/2026-09-06-hot-expert-cache.md
+**Spec:** docs/superpowers/specs/2026-09-05-hot-expert-cache.md
 
 ## Global Constraints
 
