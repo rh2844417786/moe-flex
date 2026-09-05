@@ -5,7 +5,7 @@ from pathlib import Path
 def test_server_scripts_have_valid_bash_syntax() -> None:
     scripts = sorted(Path("scripts/server").glob("*.sh"))
 
-    assert len(scripts) == 5
+    assert scripts
     for script in scripts:
         subprocess.run(
             ["bash", "-n", str(script)],

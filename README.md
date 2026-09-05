@@ -17,6 +17,8 @@ GitHub，服务器从公开仓库拉取后，在 4 张独占 NVIDIA H100 80GB PC
 
 ## 文档
 
+- [部分 BF16 卸载：服务器运行与 GitHub 指标回传](docs/partial-offload-runbook.md)
+- [部分卸载实施计划](docs/superpowers/plans/2026-09-05-partial-host-throughput.md)
 - [设计规格](docs/superpowers/specs/2026-09-01-fluxmoe-reproduction-design.md)
 - [实施计划](docs/superpowers/plans/2026-09-01-fluxmoe-reproduction.md)
 - [H100 关键矩阵实验报告](docs/results/h100-key-matrix-report.md)
@@ -41,6 +43,12 @@ GitHub，服务器从公开仓库拉取后，在 4 张独占 NVIDIA H100 80GB PC
   论文的性能复现。详细证据和边界见关键矩阵实验报告。
 
 ## Mac 验证
+
+新增的部分 BF16 卸载路径将大多数层维持原生 GPU 常驻，只对选定少数层使用
+连续 pinned CPU 权重和固定 CUDA staging slots。它在热路径不使用 Huffman
+解压或 VMM 重映射；实际吞吐收益尚待 H100 验证。三组实验比较 resident、
+同 KV 容量的部分卸载、扩大 KV 的部分卸载，结果按脱敏 JSON 经 GitHub 回传。
+入口为 `scripts/server/run_partial_offload.sh`，与下面的历史实验入口独立。
 
 ```bash
 python3 -m pip install -e '.[dev]'

@@ -33,7 +33,9 @@ from flexmoe.storage.gpu_compressed import (
 )
 from flexmoe.storage.hierarchy import StorageHierarchy
 from flexmoe.storage.host_pinned import PinnedHostStore
+from flexmoe.vllm import partial
 from flexmoe.vllm.loader import ExpertLoadAccumulator, ExpertWeights
+from flexmoe.vllm.partial import PartialForwardToken
 
 
 class _Region(Protocol):
@@ -290,6 +292,7 @@ class _LayerKindMaterializer(LayerMaterializer):
         if self._routed_experts:
             raise IntegrityError("routed materializer requires selected expert IDs")
         self._pool.map_layer(layer_idx)
+        receipts: tuple[MaterializationReceipt, ...]
         if self._batched_store is not None:
             layer_kind = f"layer.{layer_idx}.{self._kind}"
             receipts = (
@@ -987,6 +990,7 @@ def install_registry(registry: FluxMoERegistry) -> None:
 
 def reset_registry() -> None:
     global _ACTIVE_REGISTRY
+    partial.reset_registry()
     with _REGISTRY_LOCK:
         registry = _ACTIVE_REGISTRY
         _ACTIVE_REGISTRY = None
@@ -1006,6 +1010,37 @@ class FluxMoEWorkerExtension:
 
     def fluxmoe_mechanism_counters(self) -> dict[str, int]:
         return require_active_registry().mechanism_counters()
+
+    def fluxmoe_partial_stats(
+        self, synchronize: bool = True, reset_timing: bool = False,
+    ) -> dict[str, object]:
+        if os.environ.get("FLUXMOE_ENABLE") != "1":
+            if synchronize:
+                torch.cuda.synchronize()
+            return {
+                "schema_version": 1, "rank": getattr(self, "rank", 0),
+                "total_layers": 0, "offload_layers": [], "staging_slots": 0,
+                "layer_bytes": 0, "host_source_bytes": 0, "gpu_staging_bytes": 0,
+                "resident_routed_bytes": 0, "net_freed_bytes": 0,
+                "h2d_bytes": 0, "copy_launches": 0, "offload_forwards": 0,
+                "resident_forwards": 0, "weights_expected": 0, "weights_verified": 0,
+                "timing": {
+                    "sample_count": 0, "load_cuda_s": 0.0, "wait_cuda_s": 0.0,
+                    "compute_cuda_s": 0.0, "cpu_enqueue_s": 0.0,
+                },
+            }
+        return partial.require_registry().stats(
+            synchronize=synchronize, reset_timing=reset_timing
+        )
+
+    def fluxmoe_synchronize(self) -> int:
+        torch.cuda.synchronize()
+        return int(getattr(self, "rank", 0))
+
+    def fluxmoe_worker_memory_stats(self) -> dict[str, object]:
+        from flexmoe.vllm.worker_memory import worker_memory_stats
+
+        return worker_memory_stats(self)
 
 
 def _total_layers_from_model_path() -> int:
@@ -1131,6 +1166,24 @@ def maybe_create_weights(
     if not isinstance(layer_name, str):
         raise IntegrityError("FusedMoE layer_name is missing")
 
+    if os.environ.get("FLUXMOE_STORAGE_MODE") == "partial-host":
+        partial_registry = partial.registry_for_layer(layer, num_experts)
+        pair = partial_registry.register_layer(
+            layer_name,
+            (num_experts, 2 * intermediate_size_per_partition, hidden_size),
+            (num_experts, hidden_size, intermediate_size_per_partition),
+            params_dtype,
+        )
+        if pair is None:
+            return False
+        for param, kind in zip(pair, ("w13", "w2"), strict=True):
+            for attribute, value in extra_weight_attrs.items():
+                if attribute != "weight_loader":
+                    setattr(param, attribute, value)
+            _set_parameter_attr(param, "weight_loader", partial.store_partial_weight)
+            layer.register_parameter(f"{kind}_weight", param)
+        return True
+
     registry = _registry_for_layer(layer, num_experts)
     if registry.num_experts != num_experts:
         raise IntegrityError("num_experts changed between FusedMoE layers")
@@ -1160,7 +1213,9 @@ def maybe_create_weights(
 
 def before_forward(
     layer_name: str, w13: torch.Tensor, w2: torch.Tensor
-) -> ForwardToken:
+) -> ForwardToken | PartialForwardToken | None:
+    if os.environ.get("FLUXMOE_STORAGE_MODE") == "partial-host":
+        return partial.require_registry().before_forward(layer_name, w13, w2)
     return require_active_registry().before_forward(layer_name, w13, w2)
 
 
@@ -1175,7 +1230,10 @@ def prepare_routed_experts(
     )
 
 
-def after_forward(token: ForwardToken) -> None:
+def after_forward(token: ForwardToken | PartialForwardToken | None) -> None:
+    if token is None or isinstance(token, PartialForwardToken):
+        partial.require_registry().after_forward(token)
+        return
     require_active_registry().after_forward(token)
 
 

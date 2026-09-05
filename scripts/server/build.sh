@@ -12,9 +12,15 @@ git_sha="$(git -C "${project_root}" rev-parse HEAD)"
 base_image="vllm/vllm-openai:v0.10.2@sha256:607442e407b0fea97f8a132a78b787c121a996dd4de181fa08e8da06e71ec2db"
 image="moe-flex-local:${git_sha}"
 
-# Docker Hub is the only required non-Git transport. All RUN instructions are
-# forced offline so an accidental apt/PyPI/GitHub dependency fails immediately.
-docker pull "${base_image}"
+# Reuse the exact digest already present on the offline server.
+# All RUN instructions are forced offline.
+if ! docker image inspect "${base_image}" >/dev/null 2>&1; then
+  if [[ "${FLEXMOE_OFFLINE_BUILD:-0}" == "1" ]]; then
+    echo "required pinned base image is not cached: ${base_image}" >&2
+    exit 5
+  fi
+  docker pull "${base_image}"
+fi
 docker build \
   --pull=false \
   --network=none \
