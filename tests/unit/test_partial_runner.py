@@ -217,6 +217,10 @@ def memory_rows(kv_bytes=1000, blocks=10):
 
 def test_fixed_kv_uses_minimum_budget_and_verifies_actual_capacity():
     assert module().resident_kv_budget(memory_rows(), 4) == 1200
+    missing_available = memory_rows()
+    for row in missing_available:
+        row["available_kv_cache_bytes"] = None
+    assert module().resident_kv_budget(missing_available, 4) == 1000
     module().validate_fixed_kv(memory_rows(), memory_rows(), 4)
     with pytest.raises(RuntimeError, match="actual KV"):
         module().validate_fixed_kv(memory_rows(kv_bytes=900), memory_rows(), 4)

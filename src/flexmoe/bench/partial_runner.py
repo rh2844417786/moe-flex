@@ -306,10 +306,17 @@ def compare_smoke(current: Mapping[str, Any], reference: Mapping[str, Any]) -> b
 
 def resident_kv_budget(raw: object, expected_workers: int) -> int:
     rows = worker_rows(raw, expected_workers)
-    values = [row.get("available_kv_cache_bytes") for row in rows]
-    if any(type(value) is not int or value <= 0 for value in values):
-        raise RuntimeError("resident KV profiling budget is unavailable")
-    return min(cast(list[int], values))
+    available = [row.get("available_kv_cache_bytes") for row in rows]
+    if all(type(value) is int and value > 0 for value in available):
+        return min(cast(list[int], available))
+
+    # vLLM 0.10.2 reports the committed KV allocation but may omit the
+    # profiling-only available budget.  The committed allocation is the
+    # strict fixed-KV reference in that case, provided every rank agrees.
+    allocated = [row.get("kv_cache_allocated_bytes") for row in rows]
+    if all(type(value) is int and value > 0 for value in allocated):
+        return min(cast(list[int], allocated))
+    raise RuntimeError("resident KV profiling budget is unavailable")
 
 
 def validate_fixed_kv(
