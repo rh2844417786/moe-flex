@@ -587,7 +587,10 @@ def _scan_choice(runs: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
 
 def export_suite(source: Path, output: Path) -> dict[str, Any]:
     output.mkdir(parents=True, exist_ok=False)
-    runs = [public_run(_read(path)) for path in sorted(source.glob("*/summary.json"))]
+    # An export may be repeated from a suite that already contains its
+    # generated public package; that package is not a benchmark run.
+    paths = [path for path in source.glob("*/summary.json") if path.parent.name != "public"]
+    runs = [public_run(_read(path)) for path in sorted(paths)]
     if not runs:
         raise ValueError("suite has no run summaries")
     by_id = {row["run_id"]: row for row in runs}

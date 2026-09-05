@@ -252,6 +252,8 @@ def test_export_produces_numeric_json_csv_and_honest_markdown(tmp_path: Path):
         path = source / row["run_id"]
         path.mkdir()
         (path / "summary.json").write_text(json.dumps(row))
+    (source / "public").mkdir()
+    (source / "public" / "summary.json").write_text(json.dumps({"schema_version": 1}))
     (source / "suite.json").write_text(
         json.dumps(
             {
