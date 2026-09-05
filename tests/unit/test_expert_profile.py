@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import math
+from typing import cast
 
 import pytest
 
@@ -50,6 +51,16 @@ def test_profile_round_trip_has_exact_public_json_schema() -> None:
     }
     assert encoded["counts"] == [[9.0, 3.0, 2.0, 1.0], [8.0, 2.0, 1.0, 0.0]]
     assert ExpertProfile.from_dict(encoded) == profile
+
+
+def test_validated_profile_geometry_cannot_be_mutated_through_public_field() -> None:
+    profile = make_profile()
+
+    with pytest.raises(TypeError):
+        cast(dict[str, int], profile.geometry)["num_experts"] = 99
+
+    assert profile.num_experts == 4
+    assert ExpertProfile.from_dict(profile.to_dict()) == profile
 
 
 def test_profile_validates_all_consumer_identity_fields() -> None:

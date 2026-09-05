@@ -164,9 +164,10 @@ class ExpertCachePolicy:
         """Record one layer-forward's unique routed expert demand."""
 
         self._validate_layer(layer)
-        unique = set(expert_ids)
-        for expert in unique:
+        unique: set[int] = set()
+        for expert in expert_ids:
             self._validate_expert(expert)
+            unique.add(expert)
 
         increment = 1.0 / self._scale
         for expert in unique:

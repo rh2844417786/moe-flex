@@ -34,6 +34,19 @@ def test_observe_counts_repeated_ids_once_and_lookup_counts_misses() -> None:
     assert policy.stats()["cache_misses"] == 1
 
 
+@pytest.mark.parametrize("malformed_ids", [[1, True], [1, 1.0]])
+def test_observe_validates_every_id_before_deduplication(
+    malformed_ids: list[object],
+) -> None:
+    policy = ExpertCachePolicy(1, 4, 0.0, 1)
+
+    with pytest.raises(IndexError, match="expert"):
+        policy.observe(0, malformed_ids)  # type: ignore[arg-type]
+
+    assert policy.stats()["observations"] == 0
+    assert policy.stats()["unique_demands"] == 0
+
+
 def test_all_protected_cache_entries_bypass_without_mutation() -> None:
     policy = ExpertCachePolicy(
         1,

@@ -6,6 +6,7 @@ import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import cast
 
 _SCHEMA_VERSION = 1
@@ -180,7 +181,7 @@ class ExpertProfile:
                     f"counts for layer {layer} exceeds its forward_counts value"
                 )
 
-        object.__setattr__(self, "geometry", geometry)
+        object.__setattr__(self, "geometry", MappingProxyType(geometry))
         object.__setattr__(self, "model_config_sha256", config_hash)
         object.__setattr__(self, "model_identity_sha256", identity_hash)
         object.__setattr__(self, "tensor_parallel_size", tp_size)
