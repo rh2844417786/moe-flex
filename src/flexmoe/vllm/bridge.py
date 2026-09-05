@@ -990,6 +990,11 @@ def install_registry(registry: FluxMoERegistry) -> None:
 
 def reset_registry() -> None:
     global _ACTIVE_REGISTRY
+    from flexmoe.vllm import expert_cache
+    from flexmoe.vllm.expert_calibration import reset_calibration
+
+    expert_cache.reset_registry()
+    reset_calibration()
     partial.reset_registry()
     with _REGISTRY_LOCK:
         registry = _ACTIVE_REGISTRY
@@ -1007,6 +1012,28 @@ def require_active_registry() -> FluxMoERegistry:
 
 class FluxMoEWorkerExtension:
     """Named vLLM worker RPCs that do not require callable serialization."""
+
+    def fluxmoe_expert_cache_stats(
+        self, synchronize: bool = True, reset_timing: bool = False,
+    ) -> dict[str, object]:
+        from flexmoe.vllm import expert_cache
+
+        return expert_cache.require_registry().stats(
+            synchronize=synchronize, reset_timing=reset_timing)
+
+    def fluxmoe_expert_cache_reconfigure(self, resident_ratio: float) -> dict[str, object]:
+        from flexmoe.vllm import expert_cache
+
+        return expert_cache.require_registry().reconfigure(resident_ratio)
+
+    def fluxmoe_expert_calibration(self, action: str) -> dict[str, object]:
+        from flexmoe.vllm.expert_calibration import calibration_rpc
+
+        parallel = getattr(self, "parallel_config", None)
+        tp_size = getattr(parallel, "tensor_parallel_size", None)
+        if type(tp_size) is not int:
+            raise IntegrityError("worker TP configuration is unavailable")
+        return calibration_rpc(action, tp_size, int(getattr(self, "rank", 0)))
 
     def fluxmoe_mechanism_counters(self) -> dict[str, int]:
         return require_active_registry().mechanism_counters()
@@ -1184,6 +1211,21 @@ def maybe_create_weights(
             layer.register_parameter(f"{kind}_weight", param)
         return True
 
+    if os.environ.get("FLUXMOE_STORAGE_MODE") == "expert-cache":
+        from flexmoe.vllm import expert_cache
+
+        cache_registry = expert_cache.registry_for_layer(layer, num_experts)
+        pair = cache_registry.register_layer(
+            layer_name, (num_experts, 2 * intermediate_size_per_partition, hidden_size),
+            (num_experts, hidden_size, intermediate_size_per_partition), params_dtype)
+        for param, kind in zip(pair, ("w13", "w2"), strict=True):
+            for attribute, value in extra_weight_attrs.items():
+                if attribute != "weight_loader":
+                    setattr(param, attribute, value)
+            _set_parameter_attr(param, "weight_loader", expert_cache.store_expert_cache_weight)
+            layer.register_parameter(f"{kind}_weight", param)
+        return True
+
     registry = _registry_for_layer(layer, num_experts)
     if registry.num_experts != num_experts:
         raise IntegrityError("num_experts changed between FusedMoE layers")
@@ -1217,6 +1259,23 @@ def before_forward(
     if os.environ.get("FLUXMOE_STORAGE_MODE") == "partial-host":
         return partial.require_registry().before_forward(layer_name, w13, w2)
     return require_active_registry().before_forward(layer_name, w13, w2)
+
+
+def record_calibration(layer_name: str, topk_ids: torch.Tensor) -> None:
+    from flexmoe.vllm.expert_calibration import record_calibration as record
+
+    record(layer_name, topk_ids)
+
+
+def expert_cache_forward(
+    layer_name: str, hidden_states: torch.Tensor, topk_weights: torch.Tensor,
+    topk_ids: torch.Tensor, *, activation: str, apply_router_weight_on_input: bool,
+) -> torch.Tensor:
+    from flexmoe.vllm import expert_cache
+
+    return expert_cache.require_registry().forward(
+        layer_name, hidden_states, topk_weights, topk_ids, activation=activation,
+        apply_router_weight_on_input=apply_router_weight_on_input)
 
 
 def prepare_routed_experts(

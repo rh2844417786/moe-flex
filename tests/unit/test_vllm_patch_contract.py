@@ -11,7 +11,7 @@ def test_patch_contract_is_pinned_and_minimal() -> None:
 
     assert contract.commit == "01efc7ef781391e744ed08c3292817a773d654e6"
     assert contract.patch_sha256 == (
-        "25117a022aa4acd5f68b9931830ee58aa4b5033c1925c88b0a3a90551190a0df"
+        "daea5a4e4ef52cc850a7c50291f60c349a6dbdc78d083ac89efc0d93e19df145"
     )
     assert contract.touched_files == (
         "vllm/model_executor/layers/fused_moe/layer.py",

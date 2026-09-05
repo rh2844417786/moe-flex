@@ -1,10 +1,9 @@
 diff --git a/vllm/model_executor/layers/fused_moe/layer.py b/vllm/model_executor/layers/fused_moe/layer.py
-index a90a711..8bf67e0 100644
 --- a/vllm/model_executor/layers/fused_moe/layer.py
 +++ b/vllm/model_executor/layers/fused_moe/layer.py
 @@ -3,0 +4 @@
 +import os
-@@ -294,0 +296,11 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
+@@ -294,0 +296,11 @@
 +        if os.environ.get("FLUXMOE_ENABLE") == "1":
 +            from flexmoe.vllm.bridge import maybe_create_weights
 +            if maybe_create_weights(
@@ -16,7 +15,21 @@ index a90a711..8bf67e0 100644
 +                    params_dtype=params_dtype,
 +                    **extra_weight_attrs):
 +                return
-@@ -484,0 +497,7 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
+@@ -484,0 +497,21 @@
++
++        if os.environ.get("FLUXMOE_EXPERT_CALIBRATION") == "1":
++            from flexmoe.vllm.bridge import record_calibration
++            record_calibration(layer.layer_name, topk_ids)
++        if (os.environ.get("FLUXMOE_ENABLE") == "1"
++                and os.environ.get("FLUXMOE_STORAGE_MODE") == "expert-cache"):
++            from flexmoe.vllm.bridge import expert_cache_forward
++            if os.environ.get("FLUXMOE_TRACE_ROUTER") == "1":
++                from flexmoe.vllm.bridge import record_router_ids
++                record_router_ids(layer.layer_name, topk_ids)
++            return expert_cache_forward(
++                layer.layer_name, x, topk_weights, topk_ids,
++                activation=activation,
++                apply_router_weight_on_input=apply_router_weight_on_input)
 +        if os.environ.get("FLUXMOE_ROUTED_EXPERTS") == "1":
 +            from flexmoe.vllm.bridge import prepare_routed_experts
 +            prepare_routed_experts(layer.layer_name, layer.w13_weight,
@@ -24,9 +37,10 @@ index a90a711..8bf67e0 100644
 +        if os.environ.get("FLUXMOE_TRACE_ROUTER") == "1":
 +            from flexmoe.vllm.bridge import record_router_ids
 +            record_router_ids(layer.layer_name, topk_ids)
-@@ -1642 +1657,9 @@ class FusedMoE(CustomOp):
+@@ -1642 +1675,10 @@
 -        return self.forward_native(hidden_states, router_logits)
-+        if os.environ.get("FLUXMOE_ENABLE") != "1":
++        if (os.environ.get("FLUXMOE_ENABLE") != "1"
++                or os.environ.get("FLUXMOE_STORAGE_MODE") == "expert-cache"):
 +            return self.forward_native(hidden_states, router_logits)
 +        from flexmoe.vllm.bridge import after_forward, before_forward
 +        token = before_forward(self.layer_name, self.w13_weight,
