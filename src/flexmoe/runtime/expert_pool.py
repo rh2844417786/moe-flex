@@ -182,6 +182,8 @@ class ExpertPool:
         self._resident_hits = 0
         self._unique_demands = 0
         self._max_unique = 0
+        self._per_layer_unique_demands = [0] * self.total_layers
+        self._per_layer_max_unique = [0] * self.total_layers
         self._timing = dict.fromkeys(
             (
                 "route_d2h_s",
@@ -326,6 +328,10 @@ class ExpertPool:
             self._forwards[layer] += 1
             self._unique_demands += len(ids)
             self._max_unique = max(self._max_unique, len(ids))
+            self._per_layer_unique_demands[layer] += len(ids)
+            self._per_layer_max_unique[layer] = max(
+                self._per_layer_max_unique[layer], len(ids)
+            )
             return result
         except Exception:
             self._failed = True
@@ -405,6 +411,8 @@ class ExpertPool:
             "forward_counts": list(self._forwards),
             "unique_demands": self._unique_demands,
             "max_unique_per_forward": self._max_unique,
+            "per_layer_unique_demands": list(self._per_layer_unique_demands),
+            "per_layer_max_unique_per_forward": list(self._per_layer_max_unique),
             "mean_unique_coverage": self._unique_demands
             / max(1, sum(self._forwards))
             / self.num_experts,

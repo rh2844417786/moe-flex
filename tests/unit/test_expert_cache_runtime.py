@@ -80,6 +80,24 @@ def test_repeat_hits_avoid_copies_and_cross_layer_collision_is_safe():
     assert pool.stats()["policy"]["cache_hits"] == 2
 
 
+def test_per_layer_unique_coverage_and_snapshot_copies():
+    pool, sources = make_pool()
+    invoke(pool, sources, 0, [0, 1, 1])
+    invoke(pool, sources, 1, [0, 1, 2, 3])
+    invoke(pool, sources, 0, [2])
+    snapshot = pool.stats()
+    assert snapshot["per_layer_unique_demands"] == [3, 4]
+    assert snapshot["per_layer_max_unique_per_forward"] == [2, 4]
+    assert snapshot["forward_counts"] == [2, 1]
+    assert snapshot["unique_demands"] == sum(snapshot["per_layer_unique_demands"]) == 7
+    assert snapshot["max_unique_per_forward"] == 4
+    snapshot["per_layer_unique_demands"][0] = 99
+    snapshot["per_layer_max_unique_per_forward"][1] = 99
+    fresh = pool.stats()
+    assert fresh["per_layer_unique_demands"] == [3, 4]
+    assert fresh["per_layer_max_unique_per_forward"] == [2, 4]
+
+
 def test_full_demand_pins_live_entries_and_bypasses_when_cache_small():
     pool, sources = make_pool(slots=1)
     invoke(pool, sources, 0, [3])
