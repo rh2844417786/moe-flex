@@ -6,6 +6,7 @@ import importlib
 import json
 import os
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 
 import torch
@@ -216,6 +217,13 @@ class ExpertCacheRegistry:
         self.accumulators: dict[int, ExpertLoadAccumulator] = {}
         self.started = False
         self.kernel_configs = KernelConfigRecorder()
+        self.cache_policy = policy
+        self.resident_ratio = float(resident_ratio)
+        self.profile_sha256 = sha256(
+            json.dumps(
+                profile.to_dict(), sort_keys=True, separators=(",", ":")
+            ).encode()
+        ).hexdigest()
 
     def register_layer(
         self,
@@ -344,6 +352,9 @@ class ExpertCacheRegistry:
             "rank": self.tp_rank,
             "tensor_parallel_size": self.tp_size,
             "identity": self.identity,
+            "cache_policy": self.cache_policy,
+            "resident_ratio": self.resident_ratio,
+            "profile_sha256": self.profile_sha256,
             "kernel_config_scope": "native logical E geometry per actual native chunk size",
             "kernel_config_records": self.kernel_configs.snapshot(),
             "transfer_schedule": "demand-critical H2D on compute stream; no speculative prefetch",
@@ -352,6 +363,7 @@ class ExpertCacheRegistry:
     def reconfigure(self, resident_ratio: float) -> dict[str, object]:
         self.start()
         self.pool.reconfigure(resident_ratio)
+        self.resident_ratio = float(resident_ratio)
         return self.stats()
 
     def close(self) -> None:

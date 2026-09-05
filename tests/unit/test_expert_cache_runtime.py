@@ -182,7 +182,10 @@ def test_model_identity_binds_config_index_path_and_tp(tmp_path):
     assert model_profile_identity(tmp_path, 2)["geometry"]["intermediate_size"] == 16
 
 
-def test_registry_loads_tp_shards_and_requires_complete_model(monkeypatch):
+@pytest.mark.parametrize("policy_name", ["lru", "decayed-lfu"])
+def test_registry_loads_tp_shards_and_requires_complete_model(monkeypatch, policy_name):
+    from hashlib import sha256
+
     from flexmoe.runtime.expert_profile import ExpertProfile
     from flexmoe.vllm.expert_cache import ExpertCacheRegistry
 
@@ -213,6 +216,7 @@ def test_registry_loads_tp_shards_and_requires_complete_model(monkeypatch):
         resident_ratio=0.25,
         cache_slots=2,
         backend=TensorBackend(),
+        policy=policy_name,
     )
     params = []
     for layer in range(2):
@@ -247,6 +251,19 @@ def test_registry_loads_tp_shards_and_requires_complete_model(monkeypatch):
     assert torch.equal(source[1][0], full.T[:, 6:8])
     assert registry.stats()["rank"] == 3
     assert registry.stats()["tensor_parallel_size"] == 4
+    digest = sha256(
+        json.dumps(profile.to_dict(), sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert registry.stats()["cache_policy"] == policy_name
+    assert registry.stats()["resident_ratio"] == 0.25
+    assert registry.stats()["profile_sha256"] == digest
+    changed = registry.reconfigure(0.0)
+    assert changed["resident_ratio"] == 0.0
+    assert changed["cache_policy"] == policy_name
+    assert changed["profile_sha256"] == digest
+    with pytest.raises(ValueError):
+        registry.reconfigure(1.0)
+    assert registry.stats()["resident_ratio"] == 0.0
 
 
 def test_resident_calibration_rpc_runs_without_enable(monkeypatch, tmp_path):
