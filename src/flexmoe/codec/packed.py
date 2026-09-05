@@ -13,7 +13,6 @@ from flexmoe.codec.reference import (
 )
 from flexmoe.errors import ConfigurationError, IntegrityError
 
-
 _INT64_MAX = (1 << 63) - 1
 
 

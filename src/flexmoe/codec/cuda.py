@@ -60,22 +60,53 @@ class _NativeCodecModule(Protocol):
 
 
 class PackedDescriptorLike(Protocol):
-    shape: tuple[int, ...]
-    expert_count: int
-    chunk_elements: int
-    sign_mantissa: bytes
-    exponent_payload: bytes
-    chunk_byte_offsets: tuple[int, ...]
-    chunk_bit_lengths: tuple[int, ...]
-    chunk_destination_offsets: tuple[int, ...]
-    chunk_element_counts: tuple[int, ...]
-    chunk_expert_indices: tuple[int, ...]
-    segment_bit_offsets: bytes
-    trie_left: tuple[int, ...]
-    trie_right: tuple[int, ...]
-    trie_symbol: tuple[int, ...]
-    expert_trie_offsets: tuple[int, ...]
-    expert_trie_node_counts: tuple[int, ...]
+    @property
+    def shape(self) -> tuple[int, ...]: ...
+
+    @property
+    def expert_count(self) -> int: ...
+
+    @property
+    def chunk_elements(self) -> int: ...
+
+    @property
+    def sign_mantissa(self) -> bytes: ...
+
+    @property
+    def exponent_payload(self) -> bytes: ...
+
+    @property
+    def chunk_byte_offsets(self) -> tuple[int, ...]: ...
+
+    @property
+    def chunk_bit_lengths(self) -> tuple[int, ...]: ...
+
+    @property
+    def chunk_destination_offsets(self) -> tuple[int, ...]: ...
+
+    @property
+    def chunk_element_counts(self) -> tuple[int, ...]: ...
+
+    @property
+    def chunk_expert_indices(self) -> tuple[int, ...]: ...
+
+    @property
+    def segment_bit_offsets(self) -> bytes: ...
+
+    @property
+    def trie_left(self) -> tuple[int, ...]: ...
+
+    @property
+    def trie_right(self) -> tuple[int, ...]: ...
+
+    @property
+    def trie_symbol(self) -> tuple[int, ...]: ...
+
+    @property
+    def expert_trie_offsets(self) -> tuple[int, ...]: ...
+
+    @property
+    def expert_trie_node_counts(self) -> tuple[int, ...]: ...
 
 
 @lru_cache(maxsize=1)

@@ -20,9 +20,9 @@ from typing import Literal, cast
 import torch
 import yaml  # type: ignore[import-untyped]
 
-from flexmoe.bench.workload import load_workload
-from flexmoe.bench.router_trace import router_probes_match
 from flexmoe.bench.evidence import validate_mechanism_counters
+from flexmoe.bench.router_trace import router_probes_match
+from flexmoe.bench.workload import load_workload
 from flexmoe.errors import UnsupportedModeError
 from flexmoe.runtime.telemetry import JsonlTelemetry
 

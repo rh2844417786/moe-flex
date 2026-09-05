@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 import torch
 
-from flexmoe.codec.reference import encode_bf16_bits
 from flexmoe.codec.packed import pack_layer_descriptor
+from flexmoe.codec.reference import encode_bf16_bits
 from flexmoe.paged_tensor import PagedTensorRegion
 from flexmoe.storage.gpu_compressed import (
     BatchedGpuCompressedStore,

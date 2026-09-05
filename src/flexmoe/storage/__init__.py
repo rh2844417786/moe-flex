@@ -6,9 +6,9 @@ from .hierarchy import StorageHierarchy
 from .host_pinned import PinnedHostStore
 
 __all__ = [
+    "BatchedGpuCompressedStore",
     "ExpertTensorStore",
     "GpuCompressedStore",
-    "BatchedGpuCompressedStore",
     "MaterializationReceipt",
     "PinnedHostStore",
     "StorageBackend",

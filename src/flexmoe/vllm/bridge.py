@@ -823,7 +823,7 @@ class FluxMoERegistry:
             raise IntegrityError("current CUDA stream has an invalid handle")
         try:
             for kind in ("w13", "w2"):
-                self._materializers[cast(TensorKind, kind)].materialize_selected(
+                self._materializers[kind].materialize_selected(
                     layer_idx, expert_ids, stream_handle
                 )
         except Exception:

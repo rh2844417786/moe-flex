@@ -13,7 +13,7 @@ from time import perf_counter
 from typing import Protocol, cast
 
 import torch
-from safetensors import safe_open  # type: ignore[import-untyped]
+from safetensors import safe_open
 
 from flexmoe.codec.packed import pack_layer_descriptor
 from flexmoe.codec.reference import EncodedBFloat16, encode_bf16_bits
@@ -77,7 +77,7 @@ def _encode_layer(
         (model_path / "model.safetensors.index.json").read_text(encoding="utf-8")
     )
     if not isinstance(index, dict) or not isinstance(index.get("weight_map"), dict):
-        raise ValueError("checkpoint index has no weight map")
+        raise ValueError("checkpoint index has no weight map")  # noqa: TRY004 - malformed checkpoint
     weight_map = index["weight_map"]
     encoded: dict[str, dict[int, EncodedBFloat16]] = {"w13": {}, "w2": {}}
     shapes: dict[str, tuple[int, ...]] = {}
@@ -121,13 +121,13 @@ def _encode_layer(
 def _cuda_duration(operation: Callable[[], None], repetitions: int) -> list[float]:
     durations: list[float] = []
     for _ in range(repetitions):
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
+        start = torch.cuda.Event(enable_timing=True)  # type: ignore[no-untyped-call]
+        end = torch.cuda.Event(enable_timing=True)  # type: ignore[no-untyped-call]
+        start.record()  # type: ignore[no-untyped-call]
         operation()
-        end.record()
+        end.record()  # type: ignore[no-untyped-call]
         end.synchronize()
-        durations.append(start.elapsed_time(end) / 1000.0)
+        durations.append(start.elapsed_time(end) / 1000.0)  # type: ignore[no-untyped-call]
     return durations
 
 

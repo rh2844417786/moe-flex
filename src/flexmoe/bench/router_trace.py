@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import re
-
+from typing import TypeGuard
 
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 
 
-def _valid_entry(entry: object) -> bool:
+def _valid_entry(entry: object) -> TypeGuard[dict[str, object]]:
     if not isinstance(entry, dict):
         return False
     line_count = entry.get("line_count")

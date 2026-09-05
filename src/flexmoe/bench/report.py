@@ -12,9 +12,9 @@ from pathlib import Path
 from statistics import median
 from typing import cast
 
-from flexmoe.config import RunStatus
-from flexmoe.bench.router_trace import router_probes_match
 from flexmoe.bench.evidence import evidence_profile, validate_mechanism_counters
+from flexmoe.bench.router_trace import router_probes_match
+from flexmoe.config import RunStatus
 
 
 @dataclass(frozen=True)
@@ -54,9 +54,7 @@ def classify_support(
     }
     for field_name, requirement in mechanism_fields.items():
         value = getattr(evidence, field_name)
-        if requirement == "positive" and value <= 0:
-            missing.append(field_name)
-        elif requirement == "zero" and value != 0:
+        if requirement == "positive" and value <= 0 or requirement == "zero" and value != 0:
             missing.append(field_name)
     for field_name in (
         "output_tokens_match",
@@ -166,14 +164,14 @@ def validate_run_directory(run_dir: Path) -> RunEvidence:
     run_config = _json_object(run_dir / "config.json")
     variant_value = run_config.get("variant", "fluxmoe-fixed")
     if not isinstance(variant_value, str):
-        raise ValueError("run config variant must be a string")
+        raise ValueError("run config variant must be a string")  # noqa: TRY004 - artifact validation API
     if "runtime_host_expert_h2d_bytes" in counters:
         if "variant" not in run_config:
             raise ValueError("run config has no variant")
         validate_mechanism_counters(
             variant_value,
             {
-                name: cast(int, value)
+                name: value
                 for name, value in counters.items()
                 if type(value) is int
             },
@@ -300,7 +298,7 @@ def build_report(run_dir: Path, output: Path, figures: Path) -> None:
     config = _json_object(run_dir / "config.json")
     variant = config.get("variant", "fluxmoe-fixed")
     if not isinstance(variant, str):
-        raise ValueError("run config variant must be a string")
+        raise ValueError("run config variant must be a string")  # noqa: TRY004 - artifact validation API
     raw_delta = metrics.get("stressed_delta")
     stressed_delta = (
         float(cast(int | float, raw_delta)) if type(raw_delta) in {int, float} else None
