@@ -491,6 +491,9 @@ def point_command(
         "seed",
     ):
         command.extend(["--" + name.replace("_", "-"), str(options[name])])
+    for name in ("dataset_path", "dataset_manifest"):
+        if name in options:
+            command.extend(["--" + name.replace("_", "-"), str(options[name])])
     if reference is not None:
         command.extend(["--resident-run", str(reference)])
     return command
@@ -812,6 +815,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
         for name, default in defaults.items():
             command.add_argument("--" + name, type=int, default=default)
+        command.add_argument(
+            "--dataset-path",
+            type=Path,
+            default=Path("benchmarks/data/sharegpt/qwen3next_1024_requests.jsonl.zst"),
+        )
+        command.add_argument(
+            "--dataset-manifest",
+            type=Path,
+            default=Path("benchmarks/data/sharegpt/dataset_manifest.json"),
+        )
         if mode == "confirm":
             selection = command.add_mutually_exclusive_group(required=True)
             selection.add_argument("--offload-count", type=int)
