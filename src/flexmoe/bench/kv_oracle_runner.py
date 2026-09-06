@@ -11,7 +11,6 @@ from flexmoe.bench import kv_oracle_evidence as evidence
 from flexmoe.bench.partial_runner import (
     BenchmarkBackend,
     PartialRunConfig,
-    _memory,
     atomic_json,
     engine_arguments,
     read_json,
@@ -142,17 +141,24 @@ class OracleBackend(BenchmarkBackend):
         engine.collective_rpc("fluxmoe_native_probe", kwargs={"action": "start"})
 
     def measurement_fields(self, engine: Any, workers: int) -> dict[str, Any]:
-        self.last_probe = evidence.rank_rows(
-            engine.collective_rpc("fluxmoe_native_probe", kwargs={"action": "stop"})
+        # Collect first. The shared loop retains rejected samples before rethrowing.
+        self.last_probe = engine.collective_rpc(
+            "fluxmoe_native_probe", kwargs={"action": "stop"}
         )
-        memory = _memory(engine, workers)
+        memory = engine.collective_rpc("fluxmoe_worker_memory_stats")
+        return {"native_probe": self.last_probe, "memory": memory}
+
+    def validate_measurement(
+        self, result: dict[str, Any], config: PartialRunConfig
+    ) -> None:
         if (
-            evidence.validate_memory(memory, self.fraction, self.margin)
+            evidence.validate_memory(result["memory"], self.fraction, self.margin)
             != self.initial_kv
         ):
             raise ValueError("actual KV capacity changed during measurement")
-        evidence.validate_probes(self.last_probe)
-        return {"native_probe": self.last_probe, "memory": memory}
+        evidence.validate_probes(
+            result["native_probe"], min(config.batch_size, config.max_num_seqs)
+        )
 
     def finalize(self, summary: dict[str, Any]) -> None:
         summary["native_probe"] = self.last_probe

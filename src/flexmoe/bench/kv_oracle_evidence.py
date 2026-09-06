@@ -240,6 +240,8 @@ def validate_sample(row: Any, requests: int, length: int) -> None:
 
 
 def validate_run(row: Mapping[str, Any]) -> int:
+    if row.get("failed_measurement") is not None:
+        raise ValueError("rejected measurement cannot be a completed point")
     if any(
         row.get(key) != value or type(row.get(key)) is not type(value)
         for key, value in LABELS.items()
@@ -615,6 +617,16 @@ def public_run(raw: Mapping[str, Any]) -> dict[str, Any]:
         )
         for rep in raw.get("repetitions", [])
     ]
+    if raw.get("failed_measurement") is not None:
+        failed = raw["failed_measurement"]
+        if failed.get("measurement_status") != "rejected":
+            raise ValueError("failed measurement must be marked rejected")
+        result["failed_measurement"] = {
+            **fields(failed, REP_FIELDS),
+            "measurement_status": "rejected",
+            "memory": memories(failed.get("memory", [])),
+            "native_probe": probes(failed.get("native_probe", [])),
+        }
     if result["status"] == "complete":
         validate_run(result)
     return result

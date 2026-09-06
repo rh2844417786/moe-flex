@@ -5,13 +5,17 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import torch
 from test_kv_oracle import fixture
 from test_partial_runner import Engine, config
 
 
-def test_real_shared_loop_native_r0_and_oracle(tmp_path, monkeypatch):
-    from flexmoe.bench.kv_oracle_runner import OracleBackend
+@pytest.mark.parametrize("unsafe", [False, True])
+def test_real_shared_loop_native_r0_and_oracle(tmp_path, monkeypatch, unsafe):
+    from flexmoe.bench.kv_oracle_evidence import SafetyRefusal, public_run
+    from flexmoe.bench.kv_oracle_runner import OracleBackend, run_point
+    from flexmoe.bench.kv_oracle_suite import export_suite
     from flexmoe.bench.partial_runner import run_benchmark
 
     monkeypatch.setattr(os, "environ", os.environ.copy())
@@ -44,7 +48,10 @@ def test_real_shared_loop_native_r0_and_oracle(tmp_path, monkeypatch):
         def collective_rpc(self, method, kwargs=None):
             self.events.append((method, (kwargs or {}).get("action")))
             if method == "fluxmoe_worker_memory_stats":
-                return fixture(self.role)["memory"]
+                memory = fixture(self.role)["memory"]
+                if unsafe and self.role == "small" and self.resets >= 2:
+                    memory[2]["torch_peak_reserved_bytes"] = 9800
+                return memory
             if method == "fluxmoe_reset_memory_peaks":
                 self.resets += 1
                 return [0, 1, 2, 3]
@@ -73,12 +80,53 @@ def test_real_shared_loop_native_r0_and_oracle(tmp_path, monkeypatch):
         backend=OracleBackend("r0", None, 200, 400, 0.9, 100),
     )
     r0 = json.loads((tmp_path / "r0/summary.json").read_text())
-    run_benchmark(
-        cfg,
-        project_root=Path.cwd(),
-        run_dir=tmp_path / "small",
-        backend=OracleBackend("small", r0, 200, 400, 0.9, 100),
-    )
+
+    def execute_small():
+        run_point(
+            cfg,
+            project_root=Path.cwd(),
+            run_dir=tmp_path / "small",
+            role="small",
+            reference=r0,
+            small_add_bytes=200,
+            large_add_bytes=400,
+            safety_fraction=0.9,
+            safety_margin_bytes=100,
+        )
+
+    if unsafe:
+        with pytest.raises(SafetyRefusal):
+            execute_small()
+        raw = json.loads((tmp_path / "small/summary.json").read_text())
+        assert raw["status"] == "failed"
+        assert raw["repetitions_completed"] == 1
+        rejected = raw["failed_measurement"]
+        assert rejected["measurement_status"] == "rejected"
+        assert rejected["repetition"] == 1
+        assert rejected["generated_tokens"] == 15 and rejected["elapsed_s"] > 0
+        assert rejected["memory"][2]["torch_peak_reserved_bytes"] == 9800
+        assert len(rejected["native_probe"]) == 4
+        assert (tmp_path / "small/failed-rep-001.json").is_file()
+        clean = public_run(raw)
+        assert (
+            clean["failed_measurement"]["memory"][2]["torch_peak_reserved_bytes"]
+            == 9800
+        )
+        (tmp_path / "suite.json").write_text(
+            json.dumps(
+                {"roles": {r: r for r in ("r0", "small", "large")}, "order": "forward"}
+            )
+        )
+        result = export_suite(tmp_path, tmp_path / "export")
+        assert (
+            result["runs"][1]["failed_measurement"]["memory"][2][
+                "torch_peak_reserved_bytes"
+            ]
+            == 9800
+        )
+        assert result["comparison"]["decision"] == "insufficient-evidence"
+        return
+    execute_small()
     small = json.loads((tmp_path / "small/summary.json").read_text())
     assert small["requested_kv_cache_bytes"] == 1200
     assert small["contract"] == r0["contract"]

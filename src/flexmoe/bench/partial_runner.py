@@ -713,6 +713,11 @@ class BenchmarkBackend:
     def measurement_fields(self, engine: Any, workers: int) -> dict[str, Any]:
         return {}
 
+    def validate_measurement(
+        self, result: dict[str, Any], config: PartialRunConfig
+    ) -> None:
+        pass
+
 
 def run_benchmark(
     config: PartialRunConfig,
@@ -916,6 +921,13 @@ def run_benchmark(
                     **backend.measurement_fields(engine, workers),
                 }
             )
+            try:
+                backend.validate_measurement(result, config)
+            except Exception:
+                result["measurement_status"] = "rejected"
+                summary["failed_measurement"] = result
+                atomic_json(run_dir / f"failed-rep-{repetition:03d}.json", result)
+                raise
             if (
                 backend.requires_layer_transfers
                 and plan.offload_layers

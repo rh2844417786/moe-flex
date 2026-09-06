@@ -203,3 +203,53 @@ def test_launcher_clean_guard_allows_only_generated_oracle_results(tmp_path):
     source = tmp_path / "runner.py"
     source.write_text("changed code")
     assert clean() != 0
+
+
+@pytest.mark.parametrize("malformed", [False, True])
+def test_direct_export_recovers_independent_smoke_without_readable_summary(
+    tmp_path, malformed
+):
+    module = suite()
+    source = tmp_path / "source"
+    run = source / "r0"
+    run.mkdir(parents=True)
+    (source / "suite.json").write_text(
+        json.dumps(
+            {"roles": {r: r for r in ("r0", "small", "large")}, "order": "forward"}
+        )
+    )
+    (run / "smoke.json").write_text(json.dumps(fixture()["smoke"]))
+    if malformed:
+        (run / "summary.json").write_text("{")
+    result = module.export_suite(source, tmp_path / "export")
+    assert result["runs"][0]["smoke"]["generated_tokens"] == 8
+    assert result["runs"][0]["status"] == "failed"
+    assert result["comparison"]["decision"] == "insufficient-evidence"
+    if malformed:
+        assert (run / "summary.json").read_text() == "{"
+
+
+def test_malformed_launcher_summary_reaches_export_and_preserves_source(
+    tmp_path, monkeypatch
+):
+    module = suite()
+    args = module.parser().parse_args(
+        ["screen", "--project-root", str(tmp_path), "--suite-id", "malformed"]
+    )
+
+    def run(command, **kwargs):
+        directory = Path(command[command.index("--run-dir") + 1])
+        directory.mkdir()
+        (directory / "summary.json").write_text("{")
+        (directory / "smoke.json").write_text(json.dumps(fixture()["smoke"]))
+        return SimpleNamespace(returncode=1)
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+    source = module.execute_suite(args)
+    assert (source / "r0/summary.json").read_text() == "{"
+    result = json.loads(
+        (tmp_path / "docs/results/kv-oracle-malformed/results.json").read_text()
+    )
+    assert result["runs"][0]["status"] == "failed"
+    assert result["runs"][0]["smoke"]["generated_tokens"] == 8
+    assert result["comparison"]["decision"] == "insufficient-evidence"

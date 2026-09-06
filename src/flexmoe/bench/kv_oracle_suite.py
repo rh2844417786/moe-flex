@@ -78,6 +78,21 @@ def point_command(
     return command
 
 
+def _failure_row(run_id: str, role: str, stage: str) -> dict[str, Any]:
+    return {
+        **evidence.LABELS,
+        "schema_version": 1,
+        "run_id": run_id,
+        "role": role,
+        "arm": "resident",
+        "status": "failed",
+        "repetitions": [],
+        "repetitions_completed": 0,
+        "failure_code": "malformed-or-missing",
+        "failure_stage": stage,
+    }
+
+
 def execute_point(
     root: Path,
     role: str,
@@ -106,20 +121,13 @@ def execute_point(
     except (OSError, KeyboardInterrupt):
         returncode = 130
     path = run_dir / "summary.json"
-    row = (
-        shared._read(path)
-        if path.is_file()
-        else {
-            **evidence.LABELS,
-            "schema_version": 1,
-            "run_id": run_dir.name,
-            "role": role,
-            "arm": "resident",
-            "status": "failed",
-            "repetitions": [],
-            "repetitions_completed": 0,
-        }
-    )
+    try:
+        row: dict[str, Any] = shared._read(path)
+    except (ValueError, TypeError, OSError):
+        row = _failure_row(run_dir.name, role, "launcher")
+        if path.exists():
+            # Keep unreadable worker evidence intact; record launcher recovery separately.
+            path = run_dir / "launcher.json"
     row["exit_code"] = returncode if returncode >= 0 else 128 - returncode
     row["launcher_elapsed_s"] = perf_counter() - started
     if returncode in (124, 137):
@@ -140,25 +148,33 @@ def export_suite(source: Path, output: Path) -> dict[str, Any]:
     runs = []
     for role in evidence.ROLES:
         run_id = evidence.identifier(manifest["roles"][role])
+        directory = source / run_id
+        independent_smoke = None
         try:
-            raw = shared._read(source / run_id / "summary.json")
-            smoke = source / run_id / "smoke.json"
-            if not raw.get("smoke") and smoke.is_file():
-                raw = {**raw, "smoke": shared._read(smoke)}
+            independent_smoke = evidence.public_run(
+                {
+                    **_failure_row(run_id, role, "export"),
+                    "smoke": shared._read(directory / "smoke.json"),
+                }
+            )["smoke"]
+        except (ValueError, TypeError, KeyError, AttributeError, OSError):
+            pass
+        try:
+            path = directory / (
+                "launcher.json"
+                if (directory / "launcher.json").is_file()
+                else "summary.json"
+            )
+            raw = shared._read(path)
+            if not raw.get("smoke") and independent_smoke is not None:
+                raw = {**raw, "smoke": independent_smoke}
             row = evidence.public_run(raw)
             if row["run_id"] != run_id or row["role"] != role:
                 raise ValueError("manifest role differs")
         except (ValueError, TypeError, KeyError, AttributeError, OSError):
-            row = {
-                **evidence.LABELS,
-                "run_id": run_id,
-                "role": role,
-                "status": "failed",
-                "evidence_status": "malformed-or-missing",
-                "failure_code": "malformed-or-missing",
-                "failure_stage": "export",
-                "repetitions": [],
-            }
+            row = _failure_row(run_id, role, "export")
+        if not row.get("smoke") and independent_smoke is not None:
+            row["smoke"] = independent_smoke
         runs.append(row)
     anchor = None
     anchor_invalid = False
