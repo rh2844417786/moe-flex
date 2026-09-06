@@ -152,6 +152,13 @@ def export_suite(source: Path, output: Path) -> dict[str, Any]:
         path = source / run_id / "summary.json"
         try:
             raw = shared._read(path)
+            # A worker terminated after smoke may leave smoke.json while the
+            # parent has not yet merged it into summary.json. Preserve that
+            # measured, allowlisted artifact in the public failure report.
+            if not raw.get("smoke"):
+                smoke_path = source / run_id / "smoke.json"
+                if smoke_path.is_file():
+                    raw = {**raw, "smoke": shared._read(smoke_path)}
             row = shared.public_run(raw)
             if row["run_id"] != run_id:
                 raise ValueError("manifest and summary run ID differ")

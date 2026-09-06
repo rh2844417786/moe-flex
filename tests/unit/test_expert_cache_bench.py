@@ -479,6 +479,25 @@ def test_native_calibration_then_shared_rbc_excludes_inputs_and_exports_negative
     assert "BLOCK_SIZE_M" in rendered and "42000" in rendered
     assert "$MODEL_PATH" in rendered and "--max-num-batched-tokens 8192" in rendered
     assert str(model) not in rendered
+    incomplete = deepcopy(runs[1])
+    incomplete.pop("smoke", None)
+    (suite_dir / partial_suite.ARMS[1] / "summary.json").write_text(
+        json.dumps(incomplete)
+    )
+    (suite_dir / partial_suite.ARMS[1] / "smoke.json").write_text(
+        json.dumps(
+            {
+                "elapsed_s": 2.0,
+                "generated_tokens": 8,
+                "output_tokens_per_second": 4.0,
+                "request_count": 1,
+                "input_sha256": "6" * 64,
+                "output_sha256": "7" * 64,
+            }
+        )
+    )
+    with_smoke = suite.export_suite(suite_dir, tmp_path / "public-smoke")
+    assert with_smoke["runs"][1]["smoke"]["output_tokens_per_second"] == 4.0
     bad = runs[2]
     bad["repetitions"][0]["output_tokens_per_second"] = 1e30
     (suite_dir / partial_suite.ARMS[2] / "summary.json").write_text(json.dumps(bad))
