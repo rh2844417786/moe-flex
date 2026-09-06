@@ -1,0 +1,4 @@
+run_id,storage_backend,arm,status,throughput_median,throughput_min,throughput_max,kv_bytes_total
+01-resident,native,resident,complete,255.8029270310413,255.8029270310413,255.8029270310413,35923427328
+02-partial-fixed-kv,expert-cache,partial-fixed-kv,complete,18.744469952712443,18.744469952712443,18.744469952712443,35923427328
+03-partial-auto-kv,expert-cache,partial-auto-kv,complete,17.416549480405944,17.416549480405944,17.416549480405944,108264947712
