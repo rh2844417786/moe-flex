@@ -192,6 +192,10 @@ def _public_repetition(row: Mapping[str, Any]) -> dict[str, Any]:
 
 def public_run(raw: Mapping[str, Any]) -> dict[str, Any]:
     """Typed allowlist, including nested values. Never copy arbitrary objects."""
+    if (raw.get("comparison_backend") == "kv-oracle"
+            or raw.get("contract", {}).get("comparison_backend") == "kv-oracle"
+            or raw.get("diagnostic_only") is True):
+        raise ValueError("Oracle data requires the diagnostic exporter")
     result: dict[str, Any] = {
         "schema_version": 1,
         "run_id": _identifier(raw["run_id"]),
@@ -392,6 +396,14 @@ def analyze_triplet(
         "stable_three_repetition_gain": False,
     }
     runs = (resident, fixed, auto)
+    if any(
+        row.get("comparison_backend") == "kv-oracle"
+        or row.get("contract", {}).get("comparison_backend") == "kv-oracle"
+        or row.get("diagnostic_only") is True
+        for row in runs
+    ):
+        return {**result, "status": "invalid-comparison",
+                "reason": "Oracle diagnostic data is not a formal offload comparison"}
     if any(row.get("status") != "complete" for row in runs):
         return result
     try:

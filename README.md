@@ -17,6 +17,8 @@ GitHub，服务器从公开仓库拉取后，在 4 张独占 NVIDIA H100 80GB PC
 
 ## 文档
 
+- [原生 KV Oracle 容量诊断（第一阶段，仅诊断）](docs/kv-oracle-runbook.md)
+- [KV Oracle 服务器 Codex 执行提示词](docs/server-codex-kv-oracle-prompt.md)
 - [部分 BF16 卸载：服务器运行与 GitHub 指标回传](docs/partial-offload-runbook.md)
 - [部分卸载实施计划](docs/superpowers/plans/2026-09-05-partial-host-throughput.md)
 - [设计规格](docs/superpowers/specs/2026-09-01-fluxmoe-reproduction-design.md)

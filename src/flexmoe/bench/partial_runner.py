@@ -661,6 +661,17 @@ class BenchmarkBackend:
     def kv_budget(self, raw: object, workers: int) -> int:
         return resident_kv_budget(raw, workers)
 
+    def engine_arguments(
+        self, config: PartialRunConfig, fixed_kv_bytes: int | None
+    ) -> dict[str, Any]:
+        return engine_arguments(config, fixed_kv_bytes)
+
+    def initialized(self, summary: dict[str, Any], engine: Any) -> None:
+        pass
+
+    def finalize(self, summary: dict[str, Any]) -> None:
+        pass
+
     def snapshot(
         self,
         engine: Any,
@@ -752,8 +763,8 @@ def run_benchmark(
             if config.arm == "partial-fixed-kv" and reference
             else None
         )
-        summary["requested_kv_cache_bytes"] = kv_bytes
-        arguments = engine_arguments(config, kv_bytes)
+        arguments = backend.engine_arguments(config, kv_bytes)
+        summary["requested_kv_cache_bytes"] = arguments["kv_cache_memory_bytes"]
         commit = subprocess.check_output(
             ["git", "-C", str(project_root), "rev-parse", "HEAD"], text=True
         ).strip()
@@ -831,6 +842,7 @@ def run_benchmark(
                 )
             if config.arm == "partial-fixed-kv":
                 validate_fixed_kv(memory, reference["memory"], workers)
+        backend.initialized(summary, engine)
         atomic_json(run_dir / "summary.json", summary)
         smoke_prompts = [{"prompt_token_ids": list(backend.smoke_tokens(workload))}]
         smoke_length = min(config.smoke_output_length, config.output_length)
@@ -944,6 +956,7 @@ def run_benchmark(
             summary["performance_outputs_match_resident"] = [
                 row["output_sha256"] for row in summary["repetitions"]
             ] == [row["output_sha256"] for row in reference["repetitions"]]
+        backend.finalize(summary)
         atomic_json(run_dir / "summary.json", summary)
     except BaseException as error:
         summary["status"] = "failed"

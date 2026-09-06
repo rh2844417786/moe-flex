@@ -1013,6 +1013,22 @@ def require_active_registry() -> FluxMoERegistry:
 class FluxMoEWorkerExtension:
     """Named vLLM worker RPCs that do not require callable serialization."""
 
+    def fluxmoe_native_probe(self, action: str) -> dict[str, object]:
+        from flexmoe.vllm.native_probe import NativeProbe
+
+        if action not in ("start", "stop", "snapshot"):
+            raise ValueError("unknown native probe action")
+        probe = getattr(self, "_fluxmoe_native_probe", None)
+        if probe is None:
+            probe = NativeProbe(getattr(self, "model_runner", None),
+                                int(getattr(self, "rank", 0)))
+            self._fluxmoe_native_probe = probe
+        if action == "start":
+            return probe.start()
+        if action == "stop":
+            return probe.stop()
+        return probe.snapshot()
+
     def fluxmoe_expert_cache_stats(
         self, synchronize: bool = True, reset_timing: bool = False,
     ) -> dict[str, object]:
