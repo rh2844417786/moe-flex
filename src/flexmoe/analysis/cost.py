@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from functools import cache
 from statistics import median
 from typing import Any, cast
 
@@ -17,22 +17,14 @@ from .schema import (
 )
 
 _RANKS = (0, 1, 2, 3)
-_TIMING_PAIR_FIELDS = (
-    "model_identity_sha256",
-    "model_config_sha256",
-    "dataset_sha256",
-    "input_sha256",
-    "commit",
-    "tensor_parallel_size",
-    "batch_size",
-    "context_length",
-    "output_length",
-    "max_num_seqs",
-    "max_num_batched_tokens",
-    "seed",
-    "versions",
-    "hardware_sha256",
-    "prompt_hashes",
+_TIMING_COUNTERFACTUAL_FIELDS = frozenset(
+    {
+        "engine_policy_sha256",
+        "gpu_memory_utilization",
+        "hardware_unavailable_reason",
+        "run_id",
+        "role",
+    }
 )
 _EVIDENCE_PAIR_FIELDS = (
     "model_identity_sha256",
@@ -133,10 +125,11 @@ def _validate_trace_group(traces: Mapping[int, DemandTrace]) -> Mapping[str, obj
 
 def _validate_replays(
     traces: Mapping[int, DemandTrace], replays: Mapping[int, ReplayResult]
-) -> None:
+) -> dict[int, int]:
     config = replays[0].config
     if any(replays[rank].config != config for rank in _RANKS[1:]):
         raise ValueError("replays mix cache/residency configurations")
+    net_freed_by_rank: dict[int, int] = {}
     for rank in _RANKS:
         trace = traces[rank]
         replay = replays[rank]
@@ -162,8 +155,60 @@ def _validate_replays(
             raise ValueError(f"rank {rank} replay provenance differs from trace")
         if len(replay.event_load_counts) != len(trace.events):
             raise ValueError(f"rank {rank} replay event coverage differs from trace")
+        if any(
+            count * trace.expert_bytes != byte_count
+            for count, byte_count in zip(
+                replay.event_load_counts, replay.event_load_bytes
+            )
+        ):
+            raise ValueError(f"rank {rank} event_load_bytes differs from trace")
         if replay.loaded_bytes != replay.loaded_experts * trace.expert_bytes:
             raise ValueError(f"rank {rank} replay byte accounting differs")
+        if replay.demands != sum(len(event.experts) for event in trace.events):
+            raise ValueError(f"rank {rank} replay demands differs from trace")
+        expected_bytes_per_token = (
+            replay.loaded_bytes / trace.generated_tokens
+            if trace.full_workload and trace.generated_tokens is not None
+            else None
+        )
+        if expected_bytes_per_token is None:
+            if replay.bytes_per_generated_token is not None:
+                raise ValueError(
+                    f"rank {rank} bytes_per_generated_token differs from trace"
+                )
+        elif replay.bytes_per_generated_token is None or not math.isclose(
+            replay.bytes_per_generated_token,
+            expected_bytes_per_token,
+            rel_tol=1e-12,
+            abs_tol=0.0,
+        ):
+            raise ValueError(
+                f"rank {rank} bytes_per_generated_token differs from trace"
+            )
+        expected_overflows = sum(
+            count > replay.config.staging_experts
+            for count in replay.event_load_counts
+        )
+        if replay.staging_overflow_events != expected_overflows:
+            raise ValueError(
+                f"rank {rank} staging_overflow_events differs from event loads"
+            )
+        if len(replay.config.resident_experts) != trace.total_layers or any(
+            expert >= trace.num_experts
+            for row in replay.config.resident_experts
+            for expert in row
+        ):
+            raise ValueError(f"rank {rank} replay config differs from trace geometry")
+        expected_net_freed = (
+            trace.total_layers * trace.num_experts
+            - sum(len(row) for row in replay.config.resident_experts)
+            - replay.config.cache_slots
+            - replay.config.staging_experts
+        ) * trace.expert_bytes - replay.config.extra_gpu_bytes
+        if replay.net_freed_bytes != expected_net_freed:
+            raise ValueError(f"rank {rank} net_freed_bytes differs from trace/config")
+        net_freed_by_rank[rank] = expected_net_freed
+    return net_freed_by_rank
 
 
 def _validate_baseline(
@@ -194,7 +239,10 @@ def _validate_baseline(
 
 
 def _validate_timing_pair(baseline: TimingPoint, reference: TimingPoint) -> None:
-    for name in _TIMING_PAIR_FIELDS:
+    fields = (
+        set(baseline.contract) | set(reference.contract)
+    ) - _TIMING_COUNTERFACTUAL_FIELDS
+    for name in sorted(fields):
         if baseline.contract.get(name) != reference.contract.get(name):
             raise ValueError(f"timing reference {name} differs")
     if baseline.generated_tokens != reference.generated_tokens:
@@ -207,21 +255,25 @@ def _decompose_exact(total: int, sizes: tuple[int, ...]) -> tuple[int, ...] | No
     if total == 0:
         return ()
     ordered = tuple(sorted(set(sizes), reverse=True))
-
-    @cache
-    def solve(remaining: int, maximum_index: int) -> tuple[int, ...] | None:
-        if remaining == 0:
-            return ()
-        for index in range(maximum_index, len(ordered)):
-            size = ordered[index]
-            if size > remaining:
-                continue
-            suffix = solve(remaining - size, index)
-            if suffix is not None:
-                return (size,) + suffix
+    reachable = [False] * (total + 1)
+    reachable[0] = True
+    for amount in range(1, total + 1):
+        reachable[amount] = any(
+            size <= amount and reachable[amount - size] for size in ordered
+        )
+    if not reachable[total]:
         return None
-
-    return solve(total, 0)
+    chunks: list[int] = []
+    remaining = total
+    while remaining:
+        for size in ordered:
+            if size <= remaining and reachable[remaining - size]:
+                chunks.append(size)
+                remaining -= size
+                break
+        else:
+            raise AssertionError("reachable decomposition lost during reconstruction")
+    return tuple(chunks)
 
 
 def _sample_medians(
@@ -297,7 +349,9 @@ def _transport_model(
             if chunks is None:
                 continue
             copy_count += len(chunks)
-            services.append(sum(medians[size]["wall_s"] for size in chunks))
+            services.append(
+                sum((medians[size]["wall_s"] for size in chunks), 0.0)
+            )
         complete = all(chunks is not None for chunks in chunks_by_event)
         if not complete:
             missing.append("unmeasured-exact-transfer-shape")
@@ -305,7 +359,7 @@ def _transport_model(
             total_service: float | None = None
         else:
             event_services.append(services)
-            total_service = sum(services)
+            total_service = sum(services, 0.0)
         bandwidth = (
             replay.loaded_bytes / total_service
             if total_service is not None and total_service > 0.0
@@ -329,7 +383,8 @@ def _transport_model(
         if any(len(row) != event_count for row in aligned):
             raise ValueError("rank replay event counts are not aligned")
         serial_service = sum(
-            max(row[index] for row in aligned) for index in range(event_count)
+            (max(row[index] for row in aligned) for index in range(event_count)),
+            0.0,
         )
         totals = [cast(float, row["total_service_s"]) for row in per_rank]
         optimistic_service = max(totals)
@@ -363,7 +418,7 @@ def analyze_feasibility(
     trace_by_rank = _ranked(traces, "traces")
     replay_by_rank = _ranked(replays, "replays")
     trace_contract = _validate_trace_group(trace_by_rank)
-    _validate_replays(trace_by_rank, replay_by_rank)
+    net_freed_by_rank = _validate_replays(trace_by_rank, replay_by_rank)
     if not isinstance(baseline, TimingPoint):
         raise TypeError("baseline must be a TimingPoint")
     missing, baseline_assumptions = _validate_baseline(trace_contract, baseline)
@@ -442,7 +497,7 @@ def analyze_feasibility(
         if any(value <= 0 for value in actual_kv_increment):
             missing.append("positive-actual-kv-increment")
         if any(
-            actual_kv_increment[rank] > replay_by_rank[rank].net_freed_bytes
+            actual_kv_increment[rank] > net_freed_by_rank[rank]
             for rank in _RANKS
         ):
             missing.append("kv-increment-exceeds-net-freed")
@@ -513,7 +568,7 @@ def analyze_feasibility(
             "kv_reference": reference_summary,
             "actual_kv_increment_bytes_by_rank": actual_kv_increment,
             "net_freed_bytes_by_rank": [
-                replay_by_rank[rank].net_freed_bytes for rank in _RANKS
+                net_freed_by_rank[rank] for rank in _RANKS
             ],
             "time_headroom_s": headroom,
             "required_overlap_to_match_baseline_s": required_overlap,

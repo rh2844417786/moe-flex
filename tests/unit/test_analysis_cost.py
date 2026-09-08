@@ -29,6 +29,12 @@ def contract(*, hardware: str | None = "7" * 64) -> dict[str, object]:
         "hardware_sha256": hardware,
         "prompt_hashes": ["9" * 64, "a" * 64],
         "seed": 11,
+        "dtype": "bfloat16",
+        "sampling_policy": "existing-prompts",
+        "dataset_manifest_sha256": "d" * 64,
+        "source_request_count": 10,
+        "unique_selected_request_count": 10,
+        "repeated_request_count": 0,
     }
     if hardware is None:
         result["hardware_unavailable_reason"] = "uuid-query-unavailable"
@@ -345,6 +351,101 @@ def test_kv_increment_above_any_rank_net_free_is_incomplete():
     assert result["status"] == "incomplete"
     assert "kv-increment-exceeds-net-freed" in result["missing_evidence"]
     assert result["predictions"] is None
+
+
+def test_stale_replay_cannot_inflate_net_free_past_trace_config_formula():
+    from flexmoe.analysis.cost import analyze_feasibility
+
+    traces, replays = trace_replays()
+    forged = tuple(replace(row, net_freed_bytes=400) for row in replays)
+    with pytest.raises(ValueError, match="net_freed_bytes"):
+        analyze_feasibility(
+            traces,
+            forged,
+            samples(),
+            timing("r", 1, kv=100),
+            timing("k", 2 / 3, kv=500),
+        )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("bytes_per_generated_token", 999.0),
+        ("staging_overflow_events", 1),
+    ],
+)
+def test_stale_replay_trace_dependent_scalar_is_rejected(field, value):
+    from flexmoe.analysis.cost import analyze_feasibility
+
+    traces, replays = trace_replays()
+    stale = list(replays)
+    stale[0] = replace(stale[0], **{field: value})
+    with pytest.raises(ValueError, match=field):
+        analyze_feasibility(
+            traces,
+            stale,
+            samples(),
+            timing("r", 1, kv=100),
+            timing("k", 2 / 3, kv=300),
+        )
+
+
+def test_zero_loads_are_complete_and_both_scenarios_use_k_time():
+    from flexmoe.analysis.cost import analyze_feasibility
+    from flexmoe.analysis.replay import replay_trace
+    from flexmoe.analysis.schema import ReplayConfig
+
+    traces = tuple(trace(rank, event_rows=((5,), (6,))) for rank in range(4))
+    config = ReplayConfig(((5, 6),), 0, 2, "lru")
+    replays = tuple(replay_trace(row, config) for row in traces)
+    result = analyze_feasibility(
+        traces,
+        replays,
+        samples(),
+        timing("r", 1, kv=100),
+        timing("k", 2 / 3, kv=300),
+    )
+    assert result["missing_evidence"] == []
+    assert result["transport"]["serial_layer_barrier_service_s"] == 0.0
+    assert result["transport"]["optimistic_resource_service_s"] == 0.0
+    assert result["predictions"]["serial_layer_barrier"]["elapsed_s"] == pytest.approx(
+        2 / 3
+    )
+    assert result["predictions"]["optimistic_full_overlap"][
+        "elapsed_s"
+    ] == pytest.approx(2 / 3)
+    assert result["status"] == "candidate"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("dtype", "float16"), ("sampling_policy", "different-prompts")],
+)
+def test_timing_reference_rejects_execution_or_sampling_change(field, value):
+    from flexmoe.analysis.cost import analyze_feasibility
+
+    traces, replays = trace_replays()
+    reference = timing("k", 2 / 3, kv=300)
+    reference.contract[field] = value
+    with pytest.raises(ValueError, match=field):
+        analyze_feasibility(
+            traces,
+            replays,
+            samples(),
+            timing("r", 1, kv=100),
+            reference,
+        )
+
+
+def test_exact_decomposition_is_iterative_and_backtracks_deterministically():
+    from flexmoe.analysis.cost import _decompose_exact
+
+    unit_chunks = _decompose_exact(1024, (1,))
+    assert unit_chunks is not None
+    assert len(unit_chunks) == 1024
+    assert unit_chunks[:3] == (1, 1, 1)
+    assert _decompose_exact(6, (4, 3)) == (3, 3)
 
 
 def test_counterfactual_engine_and_utilization_differences_are_visible():
