@@ -364,6 +364,10 @@ def analyze_feasibility(
         trace_by_rank, replay_by_rank, samples
     )
     missing.extend(transport_missing)
+    if any(sample.contention != "isolated" for sample in samples):
+        # Joint proxy wall already includes GEMM/NCCL. It is not an additive
+        # transfer tax on the independently measured native K compute time.
+        missing.append("incremental-transfer-calibration")
     assumptions = [
         "diagnostic-model-not-deployment-measurement",
         "serial-layer-barrier-is-a-modelling-scenario-not-a-hardware-bound",

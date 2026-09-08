@@ -329,7 +329,10 @@ def parse_diagnostic_artifact(value: object, expected_kind: str) -> dict[str, ob
     """Validate fixed root labels and return the artifact-specific fields."""
 
     raw = _mapping(value, "diagnostic artifact")
-    if any(raw.get(key) != expected for key, expected in _ARTIFACT_ROOT.items()):
+    if any(
+        raw.get(key) != expected or type(raw.get(key)) is not type(expected)
+        for key, expected in _ARTIFACT_ROOT.items()
+    ):
         raise ValueError("diagnostic artifact fixed labels differ")
     if raw.get("artifact_kind") != _identifier(expected_kind, "expected_kind"):
         raise ValueError("diagnostic artifact kind differs")

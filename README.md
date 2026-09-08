@@ -103,3 +103,11 @@ probe、greedy token、bit-exact 权重以及非零映射/HtoD/解压证据齐�
 独立性能轮次的 greedy token 不稳定，因此矩阵保留每轮 token 和稳定性/跨 variant
 匹配字段用于审计，但不会把这种已知非确定性冒充为容量 OOM，也不会替代单请求 smoke
 中的严格 token parity gate。
+
+## 专家卸载可行性诊断
+
+标准库离线 CLI：`python3 -S src/flexmoe/analysis/cli.py --help`。
+四卡原生测量、独立 trace、传输微基准与诊断边界见
+[中文运行手册](docs/offload-analysis-runbook.md) 和
+[服务器 Codex 交接](docs/server-codex-offload-analysis-prompt.md)。
+这些分析输出不构成真实卸载或部署加速证据。
