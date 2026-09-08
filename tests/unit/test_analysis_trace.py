@@ -1,7 +1,35 @@
+import pickle
 from types import SimpleNamespace
 
 import pytest
 import torch
+
+
+def test_device_record_converts_cuda_identity_to_pickle_safe_values(monkeypatch):
+    from flexmoe.vllm.analysis_trace import device_record
+
+    class CudaUuid:
+        def __str__(self):
+            return "GPU-test-uuid"
+
+        def __reduce__(self):
+            raise TypeError("CUDA UUID cannot be pickled")
+
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 2)
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_device_properties",
+        lambda device: SimpleNamespace(uuid=CudaUuid(), total_memory=80_000),
+    )
+
+    record = device_record(3)
+
+    assert record == {
+        "rank": 3,
+        "uuid": "GPU-test-uuid",
+        "total_memory": 80_000,
+    }
+    assert pickle.loads(pickle.dumps(record)) == record
 
 
 def collector(**kwargs):

@@ -20,12 +20,15 @@ def device_record(rank: int) -> dict[str, Any]:
     """Query only inside a worker that already owns its CUDA context."""
     try:
         prop = torch.cuda.get_device_properties(torch.cuda.current_device())
+        uuid = getattr(prop, "uuid", None)
         return {
             "rank": rank,
-            "uuid": getattr(prop, "uuid", None),
-            "total_memory": prop.total_memory,
+            # torch exposes UUID as a torch._C object on some builds.  RPC
+            # responses must contain only regular Python values.
+            "uuid": str(uuid) if uuid is not None else None,
+            "total_memory": int(prop.total_memory),
         }
-    except (RuntimeError, AssertionError, AttributeError):
+    except (RuntimeError, AssertionError, AttributeError, TypeError, ValueError):
         return {"rank": rank, "uuid": None, "total_memory": None}
 
 
