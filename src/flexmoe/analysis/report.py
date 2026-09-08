@@ -527,7 +527,7 @@ def export_report(source: Path, output: Path) -> dict[str, Any]:
         records.append({"record_index": index, **item})
     result = diagnostic_artifact("offload-analysis-report", {"records": records})
     buffer = io.StringIO()
-    writer = csv.writer(buffer)
+    writer = csv.writer(buffer, lineterminator="\n")
     writer.writerow(["record_index", "metric", "value"])
     for row in records:
         for key, value in metric_rows(row):

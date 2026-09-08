@@ -205,7 +205,7 @@ def export_suite(source: Path, output: Path) -> dict[str, Any]:
         result["anchor"] = anchor
     shared._atomic(output / "results.json", result)
     with (output / "points.csv").open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.writer(stream)
+        writer = csv.writer(stream, lineterminator="\n")
         writer.writerow(
             [
                 "role",

@@ -479,6 +479,7 @@ def test_public_export_retains_replay_transport_provenance_without_private_paylo
             "final_cache",
         ):
             assert private not in text, (name, private)
+    assert b"\r" not in (output / "report.csv").read_bytes()
 
 
 def test_specialized_public_summaries_reject_untyped_values_and_private_keys():

@@ -225,6 +225,7 @@ def test_direct_export_recovers_independent_smoke_without_readable_summary(
     assert result["runs"][0]["smoke"]["generated_tokens"] == 8
     assert result["runs"][0]["status"] == "failed"
     assert result["comparison"]["decision"] == "insufficient-evidence"
+    assert b"\r" not in (tmp_path / "export" / "points.csv").read_bytes()
     if malformed:
         assert (run / "summary.json").read_text() == "{"
 
