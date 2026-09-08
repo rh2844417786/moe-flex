@@ -428,8 +428,13 @@ class AnalysisBackend(BenchmarkBackend):
             self.capture_active = False
             result["capture"] = self._save_capture(raw, "complete")
         result["memory"] = _memory(engine, workers)
-        self._check_memory(result["memory"])
         return result
+
+    def validate_measurement(
+        self, result: dict[str, Any], config: PartialRunConfig
+    ) -> None:
+        # The shared runner persists the complete failed sample if this rejects.
+        self._check_memory(result["memory"])
 
     def finalize(self, summary: dict[str, Any]) -> None:
         self._check_memory(summary["final_memory"])

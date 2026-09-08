@@ -228,6 +228,100 @@ def test_shared_analysis_runner_writes_valid_contract_and_capture(
         assert not engines[0].capture
 
 
+@pytest.mark.parametrize("drop_after_calls", [2, 3])
+def test_shared_runner_reserve_drop_preserves_failed_sample_and_export(
+    tmp_path, monkeypatch, drop_after_calls
+):
+    import torch
+    from test_analysis_cli import ROOT, invoke
+
+    from flexmoe.bench.partial_runner import run_benchmark
+
+    engines = []
+
+    class ReserveDropEngine(AnalysisEngine):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            engines.append(self)
+
+        def collective_rpc(self, method, kwargs=None):
+            result = super().collective_rpc(method, kwargs)
+            if method == "fluxmoe_worker_memory_stats":
+                for row in result:
+                    row.update(
+                        torch_peak_allocated_bytes=40500,
+                        torch_peak_reserved_bytes=42000,
+                    )
+                    if self.calls >= drop_after_calls:
+                        row.update(
+                            free_gpu_bytes=50,
+                            torch_reserved_bytes=79950,
+                            torch_peak_reserved_bytes=79950,
+                        )
+            return result
+
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm",
+        SimpleNamespace(
+            LLM=ReserveDropEngine, SamplingParams=SimpleNamespace, __version__="0.10.2"
+        ),
+    )
+    monkeypatch.setenv("FLEXMOE_VLLM_COMMIT", "a" * 40)
+    monkeypatch.setattr(torch.version, "cuda", "12.8")
+    run = tmp_path / "native-failed"
+    with pytest.raises(RuntimeError, match="physical GPU safety reserve"):
+        run_benchmark(
+            supported_config(tmp_path),
+            project_root=ROOT,
+            run_dir=run,
+            backend=module().AnalysisBackend(safety_reserve_bytes=100),
+        )
+    summary = json.loads((run / "summary.json").read_text())
+    assert summary["status"] == "failed"
+    assert summary["repetitions_completed"] == 0
+    assert engines[0].calls == drop_after_calls
+    assert not (run / "rep-000.json").exists()
+    if drop_after_calls == 2:
+        # The pre-measurement gate still refuses to run the measured generation.
+        assert summary.get("failed_measurement") is None
+        assert not (run / "failed-rep-000.json").exists()
+        return
+
+    failed = summary.get("failed_measurement")
+    assert isinstance(failed, dict)
+    assert failed["measurement_status"] == "rejected"
+    assert failed["generated_tokens"] == 15
+    assert failed["request_count"] == 5
+    assert failed["elapsed_s"] > 0
+    assert failed["output_tokens_per_second"] == 15 / failed["elapsed_s"]
+    assert failed == json.loads((run / "failed-rep-000.json").read_text())
+    assert [row["free_gpu_bytes"] for row in failed["memory"]] == [50] * 4
+    assert [row["torch_peak_reserved_bytes"] for row in failed["memory"]] == [79950] * 4
+
+    public = tmp_path / "public"
+    exported = invoke("export", "--source", run, "--output", public)
+    assert exported.returncode == 0, exported.stderr
+    records = json.loads((public / "report.json").read_text())["records"]
+    saved_summary = next(
+        row for row in records if row["artifact_kind"] == "native-summary"
+    )
+    saved_failed = next(
+        row for row in records if row["artifact_kind"] == "analysis-repetition"
+    )
+    assert saved_summary["status"] == "failed"
+    for sample in (saved_summary["failed_measurement"], saved_failed):
+        assert sample["generated_tokens"] == 15
+        assert sample["elapsed_s"] == failed["elapsed_s"]
+        assert [row["torch_peak_reserved_bytes"] for row in sample["memory"]] == [
+            79950
+        ] * 4
+    for path in public.iterdir():
+        rendered = path.read_text()
+        assert "79950" in rendered
+        assert str(tmp_path) not in rendered and "gpu-0" not in rendered
+
+
 def test_no_complete_capture_saves_null_and_generation_failure_cleanup(tmp_path):
     backend = module().AnalysisBackend(mode="trace")
     backend.run_dir = tmp_path

@@ -59,9 +59,31 @@ def native(kv=100, seconds=10):
         repeated_request_count=8,
     )
     policy = {
-        "model_config": {"enforce_eager": False},
-        "parallel_config": {"tensor_parallel_size": 4},
-        "scheduler_config": {"max_num_seqs": 10, "max_num_batched_tokens": 80},
+        "model_config": {
+            "enforce_eager": False,
+            "dtype": "torch.bfloat16",
+            "quantization": None,
+            "max_model_len": 108,
+            "seed": 11,
+        },
+        "cache_config": {
+            "enable_prefix_caching": False,
+            "cpu_offload_gb": 0,
+            "swap_space_bytes": 0,
+            "gpu_memory_utilization": 0.9,
+        },
+        "parallel_config": {
+            "tensor_parallel_size": 4,
+            "pipeline_parallel_size": 1,
+            "data_parallel_size": 1,
+            "disable_custom_all_reduce": False,
+        },
+        "scheduler_config": {
+            "max_num_seqs": 10,
+            "max_num_batched_tokens": 80,
+            "enable_chunked_prefill": True,
+        },
+        "compilation_config": {"level": 3, "cudagraph_mode": "FULL_AND_PIECEWISE"},
     }
     contract["engine_policy_sha256"] = hashlib.sha256(
         json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()
@@ -363,8 +385,12 @@ def test_legacy_oracle_is_validated_and_keeps_missing_identity(tmp_path):
         oracle_adapter(raw)
 
 
-def test_actual_producer_to_stdlib_converter(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "mode,utilization", [("native", 0.9), ("eager", 0.6), ("native", 0.95)]
+)
+def test_actual_producer_to_stdlib_converter(tmp_path, monkeypatch, mode, utilization):
     import os
+    from dataclasses import replace
     from types import SimpleNamespace
 
     import torch
@@ -397,15 +423,83 @@ def test_actual_producer_to_stdlib_converter(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("FLEXMOE_VLLM_COMMIT", "a" * 40)
     monkeypatch.setattr(torch.version, "cuda", "12.8")
-    cfg = supported_config(tmp_path)
+    cfg = replace(supported_config(tmp_path), gpu_memory_utilization=utilization)
     run_benchmark(
         cfg,
         project_root=ROOT,
         run_dir=tmp_path / "native",
-        backend=AnalysisBackend(mode="native", safety_reserve_bytes=100),
+        backend=AnalysisBackend(mode=mode, safety_reserve_bytes=100),
     )
     result = invoke("validate", tmp_path / "native/summary.json")
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("missing", [False, True])
+@pytest.mark.parametrize(
+    "group,key,contradiction",
+    [
+        ("model_config", "dtype", "torch.float16"),
+        ("model_config", "quantization", "awq"),
+        ("model_config", "enforce_eager", True),
+        ("model_config", "max_model_len", 109),
+        ("model_config", "seed", 12),
+        ("cache_config", "enable_prefix_caching", True),
+        ("cache_config", "cpu_offload_gb", 10),
+        ("cache_config", "swap_space_bytes", 10),
+        ("cache_config", "gpu_memory_utilization", 0.6),
+        ("parallel_config", "tensor_parallel_size", 2),
+        ("parallel_config", "pipeline_parallel_size", 2),
+        ("parallel_config", "data_parallel_size", 2),
+        ("parallel_config", "data_parallel_size", True),
+        ("parallel_config", "disable_custom_all_reduce", True),
+        ("scheduler_config", "max_num_seqs", 11),
+        ("scheduler_config", "max_num_batched_tokens", 81),
+        ("scheduler_config", "enable_chunked_prefill", False),
+        ("scheduler_config", "enable_chunked_prefill", 1),
+        ("compilation_config", "level", None),
+        ("compilation_config", "cudagraph_mode", None),
+    ],
+)
+def test_saved_native_rejects_invalid_resolved_policy_with_valid_hash(
+    tmp_path, group, key, contradiction, missing
+):
+    from flexmoe.analysis.io import load_timing
+    from flexmoe.analysis.report import public_artifact
+
+    raw = native()
+    if missing:
+        del raw["engine_policy"][group][key]
+    else:
+        raw["engine_policy"][group][key] = contradiction
+    raw["contract"]["engine_policy_sha256"] = hashlib.sha256(
+        json.dumps(raw["engine_policy"], sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    path = save(tmp_path / "native.json", raw)
+    with pytest.raises(ValueError):
+        load_timing(path)
+    with pytest.raises(ValueError):
+        public_artifact(raw)
+    assert invoke("validate", path).returncode != 0
+
+
+@pytest.mark.parametrize("key,value", [("level", 3), ("custom_ops", None)])
+def test_saved_eager_rejects_contradictory_compilation_with_valid_hash(
+    tmp_path, key, value
+):
+    raw = native()
+    raw["engine_mode"] = "eager"
+    raw["engine_policy"]["model_config"]["enforce_eager"] = True
+    raw["engine_policy"]["parallel_config"]["disable_custom_all_reduce"] = True
+    raw["engine_policy"]["compilation_config"] = {
+        "level": 0,
+        "cudagraph_mode": "NONE",
+        "custom_ops": "['all']",
+    }
+    raw["engine_policy"]["compilation_config"][key] = value
+    raw["contract"]["engine_policy_sha256"] = hashlib.sha256(
+        json.dumps(raw["engine_policy"], sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert invoke("validate", save(tmp_path / "eager.json", raw)).returncode != 0
 
 
 @pytest.mark.parametrize("custom", [False, True])

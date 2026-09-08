@@ -66,6 +66,63 @@ def evidence_validator() -> Any:
     return module
 
 
+def _validate_native_policy(
+    policy: Mapping[str, Any], contract: Mapping[str, Any], mode: str
+) -> None:
+    """Check saved resolved settings independently of the GPU producer and hash."""
+    eager = mode == "eager"
+    required = {
+        "model_config": {
+            "enforce_eager": eager,
+            "quantization": None,
+            "max_model_len": contract["context_length"] + contract["output_length"],
+            "seed": contract["seed"],
+        },
+        "cache_config": {
+            "enable_prefix_caching": False,
+            "cpu_offload_gb": 0.0,
+            "swap_space_bytes": 0,
+            "gpu_memory_utilization": contract["gpu_memory_utilization"],
+        },
+        "scheduler_config": {
+            "max_num_seqs": min(contract["batch_size"], contract["max_num_seqs"]),
+            "max_num_batched_tokens": contract["max_num_batched_tokens"],
+            "enable_chunked_prefill": True,
+        },
+        "parallel_config": {
+            "tensor_parallel_size": 4,
+            "pipeline_parallel_size": 1,
+            "data_parallel_size": 1,
+            "disable_custom_all_reduce": eager,
+        },
+    }
+    if eager:
+        # _capture_policy serializes the resolved custom_ops list as a string.
+        required["compilation_config"] = {"level": 0, "custom_ops": "['all']"}
+    for group, fields in required.items():
+        resolved = policy.get(group)
+        if not isinstance(resolved, dict):
+            raise TypeError(f"resolved policy group missing: {group}")
+        for name, expected in fields.items():
+            value = resolved.get(name)
+            valid_type = (
+                type(value) in (int, float)
+                if type(expected) is float
+                else type(value) is type(expected)
+            )
+            if name not in resolved or not valid_type or value != expected:
+                raise ValueError(f"resolved policy differs: {group}.{name}")
+    if policy["model_config"].get("dtype") not in ("torch.bfloat16", "bfloat16"):
+        raise ValueError("resolved native BF16 weights required")
+    if not eager:
+        compilation = policy.get("compilation_config")
+        if not isinstance(compilation, dict) or any(
+            type(compilation.get(name)) not in (int, str) or compilation[name] == ""
+            for name in ("level", "cudagraph_mode")
+        ):
+            raise ValueError("resolved native compilation/graph state unavailable")
+
+
 def native_timing(raw: Mapping[str, Any]) -> TimingPoint:
     fields = parse_diagnostic_artifact(raw, "native-summary")
     v = evidence_validator()
@@ -112,20 +169,7 @@ def native_timing(raw: Mapping[str, Any]) -> TimingPoint:
     ).hexdigest()
     if digest != contract["engine_policy_sha256"]:
         raise ValueError("engine policy hash differs")
-    if policy.get("model_config", {}).get("enforce_eager") is not (
-        fields["engine_mode"] == "eager"
-    ):
-        raise ValueError("resolved eager/native mode differs")
-    if policy.get("parallel_config", {}).get("tensor_parallel_size") != 4:
-        raise ValueError("resolved tensor parallel size differs")
-    for key in ("max_num_seqs", "max_num_batched_tokens"):
-        expected = (
-            min(requests, cast(int, contract[key]))
-            if key == "max_num_seqs"
-            else contract[key]
-        )
-        if policy.get("scheduler_config", {}).get(key) != expected:
-            raise ValueError("resolved scheduler policy differs")
+    _validate_native_policy(policy, contract, str(fields["engine_mode"]))
     reserve = v.integer(fields.get("physical_safety_reserve_bytes"))
     memory = fields.get("memory")
     v.validate_memory(memory, 1.0, reserve)

@@ -1,6 +1,6 @@
 # 交给服务器 Codex 的执行说明
 
-在 `/home/jovyan/wangtonghan/moe-flex` 的 `repro/fluxmoe` 运行本仓库新增的专家卸载可行性诊断。先完整阅读 `docs/offload-analysis-runbook.md` 与本说明，然后 `git pull --ff-only origin repro/fluxmoe`，记录代码 SHA，确认源码干净，按现有 `scripts/server/build.sh` 构建 pinned 镜像。用户已授权 GitHub 同步；无须为正常执行步骤重复询问。不要切 main/合并 PR。
+在 `/home/jovyan/wangtonghan/moe-flex` 的 `repro/fluxmoe` 运行本仓库新增的专家卸载可行性诊断。先检查现有 checkout，确认当前分支为 `repro/fluxmoe` 且工作区干净，再执行 `git pull --ff-only origin repro/fluxmoe`。拉取后完整阅读新到的 `docs/offload-analysis-runbook.md` 与本说明，记录实际执行代码 SHA，再确认源码干净，按现有 `scripts/server/build.sh` 构建 pinned 镜像。用户已授权 GitHub 同步；无须为正常执行步骤重复询问。不要切 main/合并 PR。
 
 只使用现有模型 `/mnt/public_data/Qwen/Qwen3-Next-80B-A3B-Instruct`、原始 BF16、TP4，以及提交的数据与 manifest。文件 `qwen3next_1024_requests.jsonl.zst` 的 1024 是记录总数，内部含 1K/2K/3K/4K 桶，不要推导不存在的 4096 文件名。允许已有 Git 同步与固定基础镜像获取，不装新包，不下载模型/数据。项目外只读，所有缓存/日志/结果留项目内。
 
