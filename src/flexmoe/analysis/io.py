@@ -81,7 +81,7 @@ def _validate_native_policy(
         "cache_config": {
             "enable_prefix_caching": False,
             "cpu_offload_gb": 0.0,
-            "swap_space_bytes": 0,
+            "swap_space_bytes": 0.0,
             "gpu_memory_utilization": contract["gpu_memory_utilization"],
         },
         "scheduler_config": {

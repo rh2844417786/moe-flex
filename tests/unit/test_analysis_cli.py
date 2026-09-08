@@ -165,6 +165,15 @@ def test_native_conversion_and_rejects_contaminated_or_incomplete(tmp_path):
     path = save(tmp_path / "native.json", native())
     result = invoke("validate", path)
     assert result.returncode == 0, result.stderr
+    raw = native()
+    raw["engine_policy"]["cache_config"]["swap_space_bytes"] = 0.0
+    raw["contract"]["engine_policy_sha256"] = hashlib.sha256(
+        json.dumps(
+            raw["engine_policy"], sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    result = invoke("validate", save(path, raw))
+    assert result.returncode == 0, result.stderr
     for mutate in (
         lambda x: x.update(engine_mode="trace"),
         lambda x: x.update(timing_eligible=False),
