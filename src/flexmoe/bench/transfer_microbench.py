@@ -10,13 +10,17 @@ import os
 import platform
 import subprocess
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import asdict, dataclass
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, cast
 
-from flexmoe.analysis.schema import TransferSample, diagnostic_artifact
+from flexmoe.analysis.schema import (
+    TransferSample,
+    diagnostic_artifact,
+    parse_diagnostic_artifact,
+)
 from flexmoe.bench.analysis_runner import hardware_identity
 from flexmoe.bench.partial_runner import atomic_json, digest_json, read_json
 
@@ -153,19 +157,23 @@ def wait_owned_workers(children: Sequence[Any], timeout_s: float) -> None:
                 raise TimeoutError("owned transfer worker deadline exceeded")
             alive[0].join(timeout=min(0.1, max(0.0, deadline - time.monotonic())))
     finally:
-        for child in children:
-            if child.is_alive():
-                child.terminate()
-        for child in children:
+        stop_owned_workers(children)
+
+
+def stop_owned_workers(children: Sequence[Any]) -> None:
+    for child in children:
+        if child.is_alive():
+            child.terminate()
+    for child in children:
+        child.join(timeout=5)
+        if child.is_alive():
+            child.kill()
             child.join(timeout=5)
-            if child.is_alive():
-                child.kill()
-                child.join(timeout=5)
 
 
 def _measure_case(
     torch: Any, dist: Any, config: TransferConfig, experts: int, mode: str
-) -> list[dict[str, Any]]:
+) -> Iterator[dict[str, Any]]:
     shape = payload_shape(config, experts)
     free, _ = torch.cuda.mem_get_info()
     if (
@@ -260,27 +268,23 @@ def _measure_case(
             "gather_s": gather_s / config.iterations,
         }
 
-    rows = []
     for repetition in range(-config.warmups, config.repetitions):
         copy_only = window(True, False)
         compute_only = window(False, True) if proxy else None
         joint = window(True, True) if proxy else copy_only
         if repetition >= 0:
-            rows.append(
-                {
-                    "repetition": repetition,
-                    **joint,
-                    "compute_s": joint["compute_s"] if proxy else None,
-                    "copy_only_wall_s": copy_only["wall_s"],
-                    "compute_only_wall_s": compute_only["wall_s"]
-                    if compute_only
-                    else None,
-                    "joint_wall_s": joint["wall_s"] if proxy else None,
-                    "copy_only_components": copy_only,
-                    "compute_only_components": compute_only,
-                }
-            )
-    return rows
+            # The caller validates and checkpoints before requesting the next
+            # repetition; no later CUDA operation can erase this observation.
+            yield {
+                "repetition": repetition,
+                **joint,
+                "compute_s": joint["compute_s"] if proxy else None,
+                "copy_only_wall_s": copy_only["wall_s"],
+                "compute_only_wall_s": compute_only["wall_s"] if compute_only else None,
+                "joint_wall_s": joint["wall_s"] if proxy else None,
+                "copy_only_components": copy_only,
+                "compute_only_components": compute_only,
+            }
 
 
 def _worker(
@@ -290,7 +294,24 @@ def _worker(
     dist = importlib.import_module("torch.distributed")
     path = Path(run_dir)
     phase = "initialization"
+    rows: list[dict[str, Any]] = []
+    measurements: list[dict[str, Any]] = []
+    fields: dict[str, Any] = {
+        "status": "running",
+        "rank": rank,
+        "contract": contract,
+        "samples": rows,
+        "measurements": measurements,
+    }
+
+    def checkpoint() -> None:
+        fields["phase"] = phase
+        atomic_json(
+            path / f"worker-{rank}.json", diagnostic_artifact("transfer-worker", fields)
+        )
+
     try:
+        checkpoint()
         if torch.cuda.device_count() != 4:
             raise RuntimeError("transport requires exactly four visible CUDA devices")
         torch.cuda.set_device(rank)
@@ -314,10 +335,16 @@ def _worker(
             if hasattr(os, "sched_getaffinity")
             else None
         )
-        rows, measurements = [], []
+        fields.update(
+            contract=contract,
+            cpu_affinity_sha256=digest_json(affinity) if affinity is not None else None,
+            topology_status="NUMA/PCIe-unavailable",
+            device_rank=rank,
+        )
         for experts in config.experts_per_batch:
             for mode in config.modes:
                 phase = f"measure-{experts}-{mode}"
+                checkpoint()
                 for raw in _measure_case(torch, dist, config, experts, mode):
                     sample = TransferSample(
                         rank,
@@ -342,41 +369,48 @@ def _worker(
                             **raw,
                         }
                     )
+                    checkpoint()
                 torch.cuda.empty_cache()
-        atomic_json(
-            path / f"worker-{rank}.json",
-            diagnostic_artifact(
-                "transfer-worker",
-                {
-                    "status": "complete",
-                    "rank": rank,
-                    "samples": rows,
-                    "measurements": measurements,
-                    "cpu_affinity_sha256": digest_json(affinity)
-                    if affinity is not None
-                    else None,
-                    "topology_status": "NUMA/PCIe-unavailable",
-                    "device_rank": rank,
-                },
-            ),
-        )
+        fields["status"] = "complete"
+        checkpoint()
     except BaseException as error:
-        atomic_json(
-            path / f"worker-{rank}.json",
-            diagnostic_artifact(
-                "transfer-worker",
-                {
-                    "status": "failed",
-                    "rank": rank,
-                    "phase": phase,
-                    "error_type": type(error).__name__,
-                },
-            ),
-        )
+        fields.update(status="failed", error_type=type(error).__name__)
+        checkpoint()
         raise
     finally:
         if dist.is_initialized():
             dist.destroy_process_group()
+
+
+def partial_worker_evidence(run_dir: Path) -> dict[str, Any]:
+    """Read stopped workers' latest atomic snapshots without granting completion."""
+    workers, samples, measurements, errors = [], [], [], []
+    for rank in range(4):
+        path = run_dir / f"worker-{rank}.json"
+        if not path.is_file():
+            continue
+        try:
+            worker = parse_diagnostic_artifact(read_json(path), "transfer-worker")
+            if worker.get("rank") != rank:
+                raise ValueError("worker checkpoint rank mismatch")
+            workers.append(worker)
+            # Preserve all raw checkpoint evidence above, while only exposing
+            # schema-validated samples through the ordinary samples field.
+            valid = [
+                TransferSample.from_dict(row).to_dict()
+                for row in cast(list[Any], worker.get("samples", []))
+            ]
+            samples.extend(valid)
+            measurements.extend(cast(list[Any], worker.get("measurements", [])))
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            errors.append({"rank": rank, "error_type": type(error).__name__})
+    return {
+        "partial_worker_artifacts": workers,
+        "samples": samples,
+        "measurements": measurements,
+        "worker_read_errors": errors,
+        "evidence_complete": False,
+    }
 
 
 def run_transfer(config: TransferConfig, *, project_root: Path, run_dir: Path) -> Path:
@@ -458,6 +492,11 @@ def run_transfer(config: TransferConfig, *, project_root: Path, run_dir: Path) -
             run_dir / "samples.json", diagnostic_artifact("transfer-samples", fields)
         )
     except BaseException as error:
+        # Stop owned processes before reading snapshots so a failing spawn or
+        # coordinator error cannot race an in-flight checkpoint promotion.
+        stop_owned_workers(children)
+        fields.update(partial_worker_evidence(run_dir))
+        fields.pop("aggregates", None)
         fields.update(
             status="failed", error_type=type(error).__name__, phase="coordinator"
         )
@@ -467,14 +506,7 @@ def run_transfer(config: TransferConfig, *, project_root: Path, run_dir: Path) -
         raise
     finally:
         # Handles partial spawn failures as well as wait failures; owns only these PIDs.
-        for child in children:
-            if child.is_alive():
-                child.terminate()
-        for child in children:
-            child.join(timeout=5)
-            if child.is_alive():
-                child.kill()
-                child.join(timeout=5)
+        stop_owned_workers(children)
     return run_dir
 
 

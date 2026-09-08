@@ -310,7 +310,7 @@ def test_real_cpu_copy_gather_and_proxy_math_with_cuda_boundary_controlled(
         contention=contention,
         gemm_size=2,
     )
-    rows = module()._measure_case(boundary, dist, cfg, 2, mode)
+    rows = list(module()._measure_case(boundary, dist, cfg, 2, mode))
     want = [[17] * 8] * 2 if mode == "contiguous" else [[0] * 8, [1] * 8]
     assert destinations[0].tolist() == want
     assert len(rows) == 2
@@ -319,3 +319,191 @@ def test_real_cpu_copy_gather_and_proxy_math_with_cuda_boundary_controlled(
     if contention != "isolated":
         assert reduced[-1].tolist() == [[2.0, 2.0], [2.0, 2.0]]
         assert rows[0]["joint_wall_s"] > rows[0]["compute_s"]
+    barriers = 0
+
+    def fail_after_first_observation():
+        nonlocal barriers
+        barriers += 1
+        if barriers > (1 if contention == "isolated" else 3):
+            raise RuntimeError("next observation failed")
+
+    dist.barrier = fail_after_first_observation
+    stream = iter(module()._measure_case(boundary, dist, cfg, 2, mode))
+    assert next(stream)["repetition"] == 0
+    with pytest.raises(RuntimeError, match="next observation"):
+        next(stream)
+
+
+def test_worker_checkpoints_before_later_failure_and_retains_contract(
+    tmp_path, monkeypatch
+):
+    from flexmoe.analysis.schema import parse_diagnostic_artifact
+    from flexmoe.vllm import analysis_trace
+
+    contract = {
+        "commit": "a" * 40,
+        "tensor_parallel_size": 4,
+        "versions": {
+            "torch": "2.8",
+            "vllm": "0.10.2",
+            "cuda": "12.8",
+            "vllm_commit": "b" * 40,
+        },
+    }
+    monkeypatch.setattr(
+        analysis_trace,
+        "device_record",
+        lambda rank: {"rank": rank, "uuid": f"u{rank}", "total_memory": 80000},
+    )
+
+    def gather(rows, row):
+        rows[:] = [
+            {"rank": i, "uuid": f"u{i}", "total_memory": 80000} for i in range(4)
+        ]
+
+    dist = SimpleNamespace(
+        init_process_group=lambda *a, **kw: None,
+        all_gather_object=gather,
+        is_initialized=lambda: True,
+        destroy_process_group=lambda: None,
+    )
+    fake_torch = SimpleNamespace(
+        cuda=SimpleNamespace(
+            device_count=lambda: 4,
+            set_device=lambda rank: None,
+            empty_cache=lambda: None,
+        )
+    )
+    original_import = importlib.import_module
+    monkeypatch.setattr(
+        module().importlib,
+        "import_module",
+        lambda name: (
+            fake_torch
+            if name == "torch"
+            else dist
+            if name == "torch.distributed"
+            else original_import(name)
+        ),
+    )
+
+    def one_then_fail(*args):
+        yield {
+            "repetition": 0,
+            "wall_s": 1.0,
+            "copy_s": 0.5,
+            "gather_s": 0.0,
+            "compute_s": None,
+        }
+        checkpoint = parse_diagnostic_artifact(
+            json.loads((tmp_path / "worker-0.json").read_text()), "transfer-worker"
+        )
+        assert checkpoint["status"] == "running"
+        assert len(checkpoint["samples"]) == len(checkpoint["measurements"]) == 1
+        raise RuntimeError("injected next-repetition failure")
+
+    monkeypatch.setattr(module(), "_measure_case", one_then_fail)
+    cfg = module().TransferConfig(
+        expert_bytes=16, experts_per_batch=(1,), modes=("contiguous",), repetitions=2
+    )
+    with pytest.raises(RuntimeError, match="injected"):
+        module()._worker(0, cfg, str(tmp_path), contract)
+    failed = parse_diagnostic_artifact(
+        json.loads((tmp_path / "worker-0.json").read_text()), "transfer-worker"
+    )
+    assert failed["status"] == "failed"
+    assert failed["phase"] == "measure-1-contiguous"
+    assert failed["error_type"] == "RuntimeError"
+    assert len(failed["samples"]) == len(failed["measurements"]) == 1
+    assert failed["contract"]["hardware_sha256"] is not None
+
+
+def test_coordinator_imports_running_checkpoint_but_never_completes(
+    tmp_path, monkeypatch
+):
+    from flexmoe.analysis.schema import TransferSample, diagnostic_artifact
+    from flexmoe.bench.partial_runner import atomic_json
+
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        SimpleNamespace(__version__="2.8.0", version=SimpleNamespace(cuda="12.8")),
+    )
+    monkeypatch.setitem(sys.modules, "vllm", SimpleNamespace(__version__="0.10.2"))
+    monkeypatch.setenv("FLEXMOE_VLLM_COMMIT", "a" * 40)
+    monkeypatch.setattr(module().subprocess, "check_output", lambda *a, **kw: "b" * 40)
+
+    class Child:
+        def __init__(self, target, args):
+            self.args = args
+            self.exitcode = None
+
+        def start(self):
+            rank, cfg, directory, contract = self.args
+            if rank == 0:
+                assert cfg.repetitions == 2
+                contract = {**contract, "hardware_sha256": "c" * 64}
+                sample = TransferSample(
+                    0,
+                    contract,
+                    1,
+                    16,
+                    "contiguous",
+                    "isolated",
+                    0,
+                    16,
+                    1.0,
+                    0.5,
+                    0,
+                    None,
+                )
+                atomic_json(
+                    __import__("pathlib").Path(directory) / "worker-0.json",
+                    diagnostic_artifact(
+                        "transfer-worker",
+                        {
+                            "rank": 0,
+                            "status": "running",
+                            "phase": "measure-1-contiguous",
+                            "contract": contract,
+                            "samples": [sample.to_dict()],
+                            "measurements": [
+                                {"repetition": 0, "copy_only_wall_s": 1.0}
+                            ],
+                        },
+                    ),
+                )
+            if rank == 1:
+                self.exitcode = 1
+
+        def is_alive(self):
+            return self.exitcode is None
+
+        def terminate(self):
+            self.exitcode = -15
+
+        def join(self, timeout=None):
+            pass
+
+    monkeypatch.setattr(
+        module().multiprocessing,
+        "get_context",
+        lambda method: SimpleNamespace(Process=Child),
+    )
+    run = tmp_path / "partial"
+    with pytest.raises(RuntimeError, match="worker"):
+        module().run_transfer(
+            module().TransferConfig(
+                expert_bytes=16,
+                experts_per_batch=(1,),
+                modes=("contiguous",),
+                repetitions=2,
+            ),
+            project_root=tmp_path,
+            run_dir=run,
+        )
+    saved = json.loads((run / "samples.json").read_text())
+    assert saved["status"] == "failed"
+    assert len(saved["samples"]) == len(saved["measurements"]) == 1
+    assert saved["partial_worker_artifacts"][0]["status"] == "running"
+    assert "aggregates" not in saved
