@@ -353,8 +353,8 @@ def validate_contract(current: Mapping[str, Any], reference: Mapping[str, Any]) 
         raise ValueError("comparison contract differs: " + ", ".join(differences))
 
 
-def _resolved_policy(engine: Any, arguments: Mapping[str, Any]) -> dict[str, Any]:
-    """Capture defaults after vLLM resolves them, then verify critical switches."""
+def _capture_policy(engine: Any, arguments: Mapping[str, Any]) -> dict[str, Any]:
+    """Capture resolved values without imposing a backend's execution policy."""
     config = engine.llm_engine.vllm_config
     fields = {
         "model_config": (
@@ -435,6 +435,13 @@ def _resolved_policy(engine: Any, arguments: Mapping[str, Any]) -> dict[str, Any
                     else str(value)
                 )
         policy[group] = values
+    return policy
+
+
+def _resolved_policy(engine: Any, arguments: Mapping[str, Any]) -> dict[str, Any]:
+    """Preserve the original strict eager diagnostic policy."""
+    config = engine.llm_engine.vllm_config
+    policy = _capture_policy(engine, arguments)
     required = {
         ("model_config", "enforce_eager"): True,
         ("model_config", "max_model_len"): arguments["max_model_len"],
@@ -636,7 +643,21 @@ class BenchmarkBackend:
     stats_key = "partial_stats"
     requires_layer_transfers = True
 
+    def prepare(self, config: PartialRunConfig, run_dir: Path) -> None:
+        pass
+
+    def cleanup(self, engine: Any) -> None:
+        pass
+
+    def resolved_policy(
+        self, engine: Any, arguments: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        return _resolved_policy(engine, arguments)
+
     def summary_fields(self) -> dict[str, Any]:
+        return {}
+
+    def record_fields(self, kind: str) -> dict[str, Any]:
         return {}
 
     def contract_fields(self) -> dict[str, Any]:
@@ -747,7 +768,9 @@ def run_benchmark(
         **backend.summary_fields(),
     }
     atomic_json(run_dir / "summary.json", summary)
+    engine = None
     try:
+        backend.prepare(config, run_dir)
         workload = backend.workload(config)
         model_config = read_json(config.model_path / "config.json")
         text_config = model_config.get("text_config", model_config)
@@ -797,7 +820,7 @@ def run_benchmark(
         if versions["vllm"].split("+")[0] != "0.10.2":
             raise RuntimeError("this protocol requires pinned vLLM 0.10.2")
         engine = vllm.LLM(**arguments)
-        policy = _resolved_policy(engine, arguments)
+        policy = backend.resolved_policy(engine, arguments)
         contract = {
             "commit": commit,
             "model_identity_sha256": digest_json(model_identity),
@@ -880,6 +903,7 @@ def run_benchmark(
             elapsed_s=smoke_elapsed,
         )
         smoke["input_sha256"] = digest_json([smoke_prompts[0]["prompt_token_ids"]])
+        smoke.update(backend.record_fields("smoke"))
         summary["smoke"] = smoke
         atomic_json(run_dir / "smoke.json", smoke)
         if reference is not None:
@@ -914,6 +938,7 @@ def run_benchmark(
             )
             result.update(
                 {
+                    **backend.record_fields("repetition"),
                     "repetition": repetition,
                     "diagnostics": backend.deltas(
                         before, after, expected_workers=workers
@@ -975,6 +1000,8 @@ def run_benchmark(
         summary["error_type"] = type(error).__name__
         atomic_json(run_dir / "summary.json", summary)
         raise
+    finally:
+        backend.cleanup(engine)
     return run_dir
 
 

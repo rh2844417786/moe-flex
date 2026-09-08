@@ -11,7 +11,7 @@ from hashlib import sha256
 from math import prod
 from pathlib import Path
 from threading import Lock
-from typing import Literal, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 
 import torch
 
@@ -1013,6 +1013,17 @@ def require_active_registry() -> FluxMoERegistry:
 class FluxMoEWorkerExtension:
     """Named vLLM worker RPCs that do not require callable serialization."""
 
+    def fluxmoe_analysis_device(self) -> dict[str, Any]:
+        from flexmoe.vllm.analysis_trace import device_record
+
+        return device_record(int(getattr(self, "rank", 0)))
+
+    def fluxmoe_analysis_trace(self, action: str, **limits: Any) -> dict[str, Any]:
+        from flexmoe.vllm.analysis_trace import trace_rpc
+
+        return trace_rpc(action, int(getattr(self, "rank", 0)),
+                         getattr(self, "model_runner", None), **limits)
+
     def fluxmoe_native_probe(self, action: str) -> dict[str, object]:
         from flexmoe.vllm.native_probe import NativeProbe
 
@@ -1285,6 +1296,11 @@ def before_forward(
 
 
 def record_calibration(layer_name: str, topk_ids: torch.Tensor) -> None:
+    if os.environ.get("FLUXMOE_ANALYSIS_TRACE") == "1":
+        from flexmoe.vllm.analysis_trace import record_trace
+
+        record_trace(layer_name, topk_ids)
+        return
     from flexmoe.vllm.expert_calibration import record_calibration as record
 
     record(layer_name, topk_ids)
