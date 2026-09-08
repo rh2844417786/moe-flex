@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import math
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from statistics import median
 from typing import Any, cast
 
+from .replay import replay_trace
 from .schema import (
     DemandTrace,
     ReplayResult,
@@ -125,90 +125,28 @@ def _validate_trace_group(traces: Mapping[int, DemandTrace]) -> Mapping[str, obj
 
 def _validate_replays(
     traces: Mapping[int, DemandTrace], replays: Mapping[int, ReplayResult]
-) -> dict[int, int]:
+) -> dict[int, ReplayResult]:
     config = replays[0].config
     if any(replays[rank].config != config for rank in _RANKS[1:]):
         raise ValueError("replays mix cache/residency configurations")
-    net_freed_by_rank: dict[int, int] = {}
+    verified: dict[int, ReplayResult] = {}
     for rank in _RANKS:
         trace = traces[rank]
         replay = replays[rank]
-        if (
-            replay.trace_id,
-            replay.rank,
-            replay.model_identity_sha256,
-            replay.model_config_sha256,
-            replay.dataset_sha256,
-            replay.input_sha256,
-            replay.commit,
-            replay.hardware_sha256,
-        ) != (
-            trace.trace_id,
-            trace.rank,
-            trace.contract["model_identity_sha256"],
-            trace.contract["model_config_sha256"],
-            trace.contract["dataset_sha256"],
-            trace.contract["input_sha256"],
-            trace.contract["commit"],
-            trace.contract["hardware_sha256"],
-        ):
-            raise ValueError(f"rank {rank} replay provenance differs from trace")
-        if len(replay.event_load_counts) != len(trace.events):
-            raise ValueError(f"rank {rank} replay event coverage differs from trace")
-        if any(
-            count * trace.expert_bytes != byte_count
-            for count, byte_count in zip(
-                replay.event_load_counts, replay.event_load_bytes
+        canonical = replay_trace(trace, replay.config)
+        saved_fields = replay.to_dict()
+        canonical_fields = canonical.to_dict()
+        if saved_fields != canonical_fields:
+            differing = next(
+                name
+                for name in canonical_fields
+                if saved_fields.get(name) != canonical_fields[name]
             )
-        ):
-            raise ValueError(f"rank {rank} event_load_bytes differs from trace")
-        if replay.loaded_bytes != replay.loaded_experts * trace.expert_bytes:
-            raise ValueError(f"rank {rank} replay byte accounting differs")
-        if replay.demands != sum(len(event.experts) for event in trace.events):
-            raise ValueError(f"rank {rank} replay demands differs from trace")
-        expected_bytes_per_token = (
-            replay.loaded_bytes / trace.generated_tokens
-            if trace.full_workload and trace.generated_tokens is not None
-            else None
-        )
-        if expected_bytes_per_token is None:
-            if replay.bytes_per_generated_token is not None:
-                raise ValueError(
-                    f"rank {rank} bytes_per_generated_token differs from trace"
-                )
-        elif replay.bytes_per_generated_token is None or not math.isclose(
-            replay.bytes_per_generated_token,
-            expected_bytes_per_token,
-            rel_tol=1e-12,
-            abs_tol=0.0,
-        ):
             raise ValueError(
-                f"rank {rank} bytes_per_generated_token differs from trace"
+                f"rank {rank} {differing} differs from canonical replay"
             )
-        expected_overflows = sum(
-            count > replay.config.staging_experts
-            for count in replay.event_load_counts
-        )
-        if replay.staging_overflow_events != expected_overflows:
-            raise ValueError(
-                f"rank {rank} staging_overflow_events differs from event loads"
-            )
-        if len(replay.config.resident_experts) != trace.total_layers or any(
-            expert >= trace.num_experts
-            for row in replay.config.resident_experts
-            for expert in row
-        ):
-            raise ValueError(f"rank {rank} replay config differs from trace geometry")
-        expected_net_freed = (
-            trace.total_layers * trace.num_experts
-            - sum(len(row) for row in replay.config.resident_experts)
-            - replay.config.cache_slots
-            - replay.config.staging_experts
-        ) * trace.expert_bytes - replay.config.extra_gpu_bytes
-        if replay.net_freed_bytes != expected_net_freed:
-            raise ValueError(f"rank {rank} net_freed_bytes differs from trace/config")
-        net_freed_by_rank[rank] = expected_net_freed
-    return net_freed_by_rank
+        verified[rank] = canonical
+    return verified
 
 
 def _validate_baseline(
@@ -416,9 +354,9 @@ def analyze_feasibility(
     """Estimate diagnostic-only headroom without claiming deployment gain."""
 
     trace_by_rank = _ranked(traces, "traces")
-    replay_by_rank = _ranked(replays, "replays")
+    saved_replay_by_rank = _ranked(replays, "replays")
     trace_contract = _validate_trace_group(trace_by_rank)
-    net_freed_by_rank = _validate_replays(trace_by_rank, replay_by_rank)
+    replay_by_rank = _validate_replays(trace_by_rank, saved_replay_by_rank)
     if not isinstance(baseline, TimingPoint):
         raise TypeError("baseline must be a TimingPoint")
     missing, baseline_assumptions = _validate_baseline(trace_contract, baseline)
@@ -497,7 +435,7 @@ def analyze_feasibility(
         if any(value <= 0 for value in actual_kv_increment):
             missing.append("positive-actual-kv-increment")
         if any(
-            actual_kv_increment[rank] > net_freed_by_rank[rank]
+            actual_kv_increment[rank] > replay_by_rank[rank].net_freed_bytes
             for rank in _RANKS
         ):
             missing.append("kv-increment-exceeds-net-freed")
@@ -568,7 +506,7 @@ def analyze_feasibility(
             "kv_reference": reference_summary,
             "actual_kv_increment_bytes_by_rank": actual_kv_increment,
             "net_freed_bytes_by_rank": [
-                net_freed_by_rank[rank] for rank in _RANKS
+                replay_by_rank[rank].net_freed_bytes for rank in _RANKS
             ],
             "time_headroom_s": headroom,
             "required_overlap_to_match_baseline_s": required_overlap,

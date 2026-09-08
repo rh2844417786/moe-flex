@@ -391,6 +391,70 @@ def test_stale_replay_trace_dependent_scalar_is_rejected(field, value):
         )
 
 
+def test_self_consistent_forged_zero_load_replay_is_rejected():
+    from flexmoe.analysis.cost import analyze_feasibility
+    from flexmoe.analysis.schema import ReplayResult
+
+    traces, replays = trace_replays()
+    forged_row = replays[0].to_dict()
+    forged_row.update(
+        loaded_experts=0,
+        loaded_bytes=0,
+        resident_hits=2,
+        cache_hits=0,
+        event_load_counts=[0, 0],
+        event_load_bytes=[0, 0],
+        bytes_per_generated_token=0.0,
+        per_layer_totals=[
+            {
+                "demands": 2,
+                "resident_hits": 2,
+                "cache_hits": 0,
+                "loaded_experts": 0,
+                "loaded_bytes": 0,
+            }
+        ],
+        per_phase_totals={
+            "decode": {
+                "demands": 2,
+                "resident_hits": 2,
+                "cache_hits": 0,
+                "loaded_experts": 0,
+                "loaded_bytes": 0,
+            }
+        },
+    )
+    forged = list(replays)
+    forged[0] = ReplayResult.from_dict(forged_row)
+    with pytest.raises(ValueError, match="canonical replay"):
+        analyze_feasibility(
+            traces,
+            forged,
+            samples(),
+            timing("r", 1, kv=100),
+            timing("k", 2 / 3, kv=300),
+        )
+
+
+def test_serialized_replay_roundtrip_remains_valid_cost_evidence():
+    from flexmoe.analysis.cost import analyze_feasibility
+    from flexmoe.analysis.schema import ReplayResult
+
+    traces, replays = trace_replays()
+    restored = tuple(ReplayResult.from_dict(row.to_dict()) for row in replays)
+    result = analyze_feasibility(
+        traces,
+        restored,
+        samples(),
+        timing("r", 1, kv=100),
+        timing("k", 2 / 3, kv=300),
+    )
+    assert result["status"] == "candidate"
+    assert result["transport"]["serial_layer_barrier_service_s"] == pytest.approx(
+        0.2
+    )
+
+
 def test_zero_loads_are_complete_and_both_scenarios_use_k_time():
     from flexmoe.analysis.cost import analyze_feasibility
     from flexmoe.analysis.replay import replay_trace
