@@ -1,0 +1,216 @@
+{
+  "schema_version": 1,
+  "diagnostic_only": true,
+  "formal_offload_gain": false,
+  "deployment_gain_proven": false,
+  "artifact_kind": "offload-analysis-report",
+  "records": [
+    {
+      "record_index": 0,
+      "elapsed_s": 46.940577286761254,
+      "generated_tokens": 131072,
+      "memory": [
+        {
+          "free_gpu_bytes": 3527475200,
+          "kv_cache_accounting_consistent": true,
+          "kv_cache_allocated_bytes": 34472853504,
+          "kv_cache_declared_bytes": 34472853504,
+          "num_gpu_blocks": 10314,
+          "rank": 0,
+          "torch_allocated_bytes": 74562651136,
+          "torch_peak_allocated_bytes": 75044282368,
+          "torch_peak_reserved_bytes": 75629592576,
+          "torch_reserved_bytes": 75629592576,
+          "total_gpu_bytes": 85017493504
+        },
+        {
+          "free_gpu_bytes": 3527475200,
+          "kv_cache_accounting_consistent": true,
+          "kv_cache_allocated_bytes": 34472853504,
+          "kv_cache_declared_bytes": 34472853504,
+          "num_gpu_blocks": 10314,
+          "rank": 1,
+          "torch_allocated_bytes": 74562651136,
+          "torch_peak_allocated_bytes": 75044282368,
+          "torch_peak_reserved_bytes": 75629592576,
+          "torch_reserved_bytes": 75629592576,
+          "total_gpu_bytes": 85017493504
+        },
+        {
+          "free_gpu_bytes": 3527475200,
+          "kv_cache_accounting_consistent": true,
+          "kv_cache_allocated_bytes": 34472853504,
+          "kv_cache_declared_bytes": 34472853504,
+          "num_gpu_blocks": 10314,
+          "rank": 2,
+          "torch_allocated_bytes": 74562651136,
+          "torch_peak_allocated_bytes": 75044282368,
+          "torch_peak_reserved_bytes": 75629592576,
+          "torch_reserved_bytes": 75629592576,
+          "total_gpu_bytes": 85017493504
+        },
+        {
+          "free_gpu_bytes": 3527475200,
+          "kv_cache_accounting_consistent": true,
+          "kv_cache_allocated_bytes": 34472853504,
+          "kv_cache_declared_bytes": 34472853504,
+          "num_gpu_blocks": 10314,
+          "rank": 3,
+          "torch_allocated_bytes": 74562651136,
+          "torch_peak_allocated_bytes": 75044282368,
+          "torch_peak_reserved_bytes": 75629592576,
+          "torch_reserved_bytes": 75629592576,
+          "total_gpu_bytes": 85017493504
+        }
+      ],
+      "output_tokens_per_second": 2792.2962940842763,
+      "repetition": 0,
+      "request_count": 256,
+      "timing_eligible": true,
+      "artifact_kind": "analysis-repetition"
+    },
+    {
+      "record_index": 1,
+      "elapsed_s": 46.947938309051096,
+      "generated_tokens": 131072,
+      "memory": [
+        {
+          "free_gpu_bytes": 3527475200,
+          "kv_cache_accounting_consistent": true,
+          "kv_cache_allocated_bytes": 34472853504,
+          "kv_cache_declared_bytes": 34472853504,
+          "num_gpu_blocks": 10314,
+          "rank": 0,
+          "torch_allocated_bytes": 74562651136,
+          "torch_peak_allocated_bytes": 75044282368,
+          "torch_peak_reserved_bytes": 75629592576,
+          "torch_reserved_bytes": 75629592576,
+          "total_gpu_bytes": 85017493504
+        },
+        {
+          "free_gpu_bytes": 3527475200,
+          "kv_cache_accounting_consistent": true,
+          "kv_cache_allocated_bytes": 34472853504,
+          "kv_cache_declared_bytes": 34472853504,
+          "num_gpu_blocks": 10314,
+          "rank": 1,
+          "torch_allocated_bytes": 74562651136,
+          "torch_peak_allocated_bytes": 75044282368,
+          "torch_peak_reserved_bytes": 75629592576,
+          "torch_reserved_bytes": 75629592576,
+          "total_gpu_bytes": 85017493504
+        },
+        {
+          "free_gpu_bytes": 3527475200,
+          "kv_cache_accounting_consistent": true,
+          "kv_cache_allocated_bytes": 34472853504,
+          "kv_cache_declared_bytes": 34472853504,
+          "num_gpu_blocks": 10314,
+          "rank": 2,
+          "torch_allocated_bytes": 74562651136,
+          "torch_peak_allocated_bytes": 75044282368,
+          "torch_peak_reserved_bytes": 75629592576,
+          "torch_reserved_bytes": 75629592576,
+          "total_gpu_bytes": 85017493504
+        },
+        {
+          "free_gpu_bytes": 3527475200,
+          "kv_cache_accounting_consistent": true,
+          "kv_cache_allocated_bytes": 34472853504,
+          "kv_cache_declared_bytes": 34472853504,
+          "num_gpu_blocks": 10314,
+          "rank": 3,
+          "torch_allocated_bytes": 74562651136,
+          "torch_peak_allocated_bytes": 75044282368,
+          "torch_peak_reserved_bytes": 75629592576,
+          "torch_reserved_bytes": 75629592576,
+          "total_gpu_bytes": 85017493504
+        }
+      ],
+      "output_tokens_per_second": 2791.858486674603,
+      "repetition": 1,
+      "request_count": 256,
+      "timing_eligible": true,
+      "artifact_kind": "analysis-repetition"
+    },
+    {
+      "record_index": 2,
+      "elapsed_s": 47.04941121209413,
+      "generated_tokens": 131072,
+      "memory": [
+        {
+          "free_gpu_bytes": 3527475200,
+          "kv_cache_accounting_consistent": true,
+          "kv_cache_allocated_bytes": 34472853504,
+          "kv_cache_declared_bytes": 34472853504,
+          "num_gpu_blocks": 10314,
+          "rank": 0,
+          "torch_allocated_bytes": 74562651136,
+          "torch_peak_allocated_bytes": 75044282368,
+          "torch_peak_reserved_bytes": 75629592576,
+          "torch_reserved_bytes": 75629592576,
+          "total_gpu_bytes": 85017493504
+        },
+        {
+          "free_gpu_bytes": 3527475200,
+          "kv_cache_accounting_consistent": true,
+          "kv_cache_allocated_bytes": 34472853504,
+          "kv_cache_declared_bytes": 34472853504,
+          "num_gpu_blocks": 10314,
+          "rank": 1,
+          "torch_allocated_bytes": 74562651136,
+          "torch_peak_allocated_bytes": 75044282368,
+          "torch_peak_reserved_bytes": 75629592576,
+          "torch_reserved_bytes": 75629592576,
+          "total_gpu_bytes": 85017493504
+        },
+        {
+          "free_gpu_bytes": 3527475200,
+          "kv_cache_accounting_consistent": true,
+          "kv_cache_allocated_bytes": 34472853504,
+          "kv_cache_declared_bytes": 34472853504,
+          "num_gpu_blocks": 10314,
+          "rank": 2,
+          "torch_allocated_bytes": 74562651136,
+          "torch_peak_allocated_bytes": 75044282368,
+          "torch_peak_reserved_bytes": 75629592576,
+          "torch_reserved_bytes": 75629592576,
+          "total_gpu_bytes": 85017493504
+        },
+        {
+          "free_gpu_bytes": 3527475200,
+          "kv_cache_accounting_consistent": true,
+          "kv_cache_allocated_bytes": 34472853504,
+          "kv_cache_declared_bytes": 34472853504,
+          "num_gpu_blocks": 10314,
+          "rank": 3,
+          "torch_allocated_bytes": 74562651136,
+          "torch_peak_allocated_bytes": 75044282368,
+          "torch_peak_reserved_bytes": 75629592576,
+          "torch_reserved_bytes": 75629592576,
+          "total_gpu_bytes": 85017493504
+        }
+      ],
+      "output_tokens_per_second": 2785.8372001541165,
+      "repetition": 2,
+      "request_count": 256,
+      "timing_eligible": true,
+      "artifact_kind": "analysis-repetition"
+    },
+    {
+      "record_index": 3,
+      "elapsed_s": 15.093097911216319,
+      "generated_tokens": 8,
+      "input_sha256": "f9ef3113fd157e161e0b373cbc8d824dfc6f5beb54b87dbda290a8ad54e69419",
+      "output_tokens_per_second": 0.530043603179362,
+      "request_count": 1,
+      "timing_eligible": true,
+      "artifact_kind": "analysis-smoke"
+    },
+    {
+      "record_index": 4,
+      "status": "unreadable",
+      "artifact_kind": "unknown"
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+role,status,rank,actual_KV_GB,used_GPU_GB,torch_peak_reserved_GB
+r0,failed,,,,
+small,failed,,,,
+large,failed,,,,

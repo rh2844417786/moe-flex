@@ -1,0 +1,2241 @@
+{
+  "schema_version": 1,
+  "diagnostic_only": true,
+  "formal_offload_gain": false,
+  "deployment_gain_proven": false,
+  "artifact_kind": "offload-analysis-report",
+  "records": [
+    {
+      "record_index": 0,
+      "analyses": [
+        {
+          "artifact_kind": "feasibility-analysis",
+          "status": "model-no-headroom",
+          "candidate_class": "neither-profitable",
+          "baseline": {
+            "median_elapsed_s": 46.814905245788395,
+            "throughput_tps": 2799.792060068126,
+            "source_kind": "native-measured",
+            "engine_mode": "native"
+          },
+          "kv_reference": {
+            "median_elapsed_s": 47.22915842477232,
+            "throughput_tps": 2775.2347145624976,
+            "source_kind": "native-measured",
+            "engine_mode": "native",
+            "gpu_memory_utilization": 0.915,
+            "engine_policy_sha256": "d3f4745a0edd6083673b5cf581859d9c1de64570238ea2f5f2a4223b3340fb10"
+          },
+          "actual_kv_increment_bytes_by_rank": [
+            1276772352,
+            1276772352,
+            1276772352,
+            1276772352
+          ],
+          "net_freed_bytes_by_rank": [
+            6895435776,
+            6895435776,
+            6895435776,
+            6895435776
+          ],
+          "time_headroom_s": -0.4142531789839268,
+          "required_overlap_to_match_baseline_s": 107.73999322485179,
+          "transport": {
+            "mode": "contiguous",
+            "contention": "isolated",
+            "coverage_complete": true,
+            "per_rank": [
+              {
+                "rank": 0,
+                "loaded_bytes": 3011197796352,
+                "copy_count": 228022,
+                "total_service_s": 106.87151588778943,
+                "effective_bandwidth_bytes_s": 28175868671.25222
+              },
+              {
+                "rank": 1,
+                "loaded_bytes": 3011197796352,
+                "copy_count": 228022,
+                "total_service_s": 101.02569413464516,
+                "effective_bandwidth_bytes_s": 29806256934.386726
+              },
+              {
+                "rank": 2,
+                "loaded_bytes": 3011197796352,
+                "copy_count": 228022,
+                "total_service_s": 97.45300032012165,
+                "effective_bandwidth_bytes_s": 30898974751.52709
+              },
+              {
+                "rank": 3,
+                "loaded_bytes": 3011197796352,
+                "copy_count": 228022,
+                "total_service_s": 105.91581306792796,
+                "effective_bandwidth_bytes_s": 28430106035.449127
+              }
+            ],
+            "bottleneck_rank": 0,
+            "optimistic_resource_service_s": 106.87151588778943,
+            "serial_layer_barrier_service_s": 107.32574004586786,
+            "service_metric": "median-measured-wall-s-per-exact-chunk",
+            "chunk_rule": "largest-first-exact-decomposition-with-backtracking"
+          },
+          "bandwidth_requirements_bytes_s": [
+            64321347667.85406,
+            64321347667.85406,
+            64321347667.85406,
+            64321347667.85406
+          ],
+          "predictions": {
+            "serial_layer_barrier": {
+              "elapsed_s": 154.55489847064018,
+              "throughput_tps": 848.0611180686642
+            },
+            "optimistic_full_overlap": {
+              "elapsed_s": 106.87151588778943,
+              "throughput_tps": 1226.4446603117342
+            },
+            "throughput_range_tps": [
+              848.0611180686642,
+              1226.4446603117342
+            ]
+          },
+          "assumptions": [
+            "diagnostic-model-not-deployment-measurement",
+            "full-overlap-is-optimistic-and-not-a-hardware-bound",
+            "kv-reference-engine-policy-differs",
+            "kv-reference-utilization-differs",
+            "no-rank-bandwidth-aggregation",
+            "serial-layer-barrier-is-a-modelling-scenario-not-a-hardware-bound",
+            "trace-engine-policy-differs"
+          ],
+          "unpublished_reason_count": 0,
+          "missing_evidence": []
+        },
+        {
+          "artifact_kind": "feasibility-analysis",
+          "status": "model-no-headroom",
+          "candidate_class": "neither-profitable",
+          "baseline": {
+            "median_elapsed_s": 46.814905245788395,
+            "throughput_tps": 2799.792060068126,
+            "source_kind": "native-measured",
+            "engine_mode": "native"
+          },
+          "kv_reference": {
+            "median_elapsed_s": 47.22915842477232,
+            "throughput_tps": 2775.2347145624976,
+            "source_kind": "native-measured",
+            "engine_mode": "native",
+            "gpu_memory_utilization": 0.915,
+            "engine_policy_sha256": "d3f4745a0edd6083673b5cf581859d9c1de64570238ea2f5f2a4223b3340fb10"
+          },
+          "actual_kv_increment_bytes_by_rank": [
+            1276772352,
+            1276772352,
+            1276772352,
+            1276772352
+          ],
+          "net_freed_bytes_by_rank": [
+            6895435776,
+            6895435776,
+            6895435776,
+            6895435776
+          ],
+          "time_headroom_s": -0.4142531789839268,
+          "required_overlap_to_match_baseline_s": 120.46126490226015,
+          "transport": {
+            "mode": "fragmented",
+            "contention": "isolated",
+            "coverage_complete": true,
+            "per_rank": [
+              {
+                "rank": 0,
+                "loaded_bytes": 3011197796352,
+                "copy_count": 228022,
+                "total_service_s": 112.82340740319341,
+                "effective_bandwidth_bytes_s": 26689477526.51166
+              },
+              {
+                "rank": 1,
+                "loaded_bytes": 3011197796352,
+                "copy_count": 228022,
+                "total_service_s": 117.08453250024468,
+                "effective_bandwidth_bytes_s": 25718151937.325344
+              },
+              {
+                "rank": 2,
+                "loaded_bytes": 3011197796352,
+                "copy_count": 228022,
+                "total_service_s": 118.85802308190614,
+                "effective_bandwidth_bytes_s": 25334409224.331085
+              },
+              {
+                "rank": 3,
+                "loaded_bytes": 3011197796352,
+                "copy_count": 228022,
+                "total_service_s": 110.48376680072397,
+                "effective_bandwidth_bytes_s": 27254662685.272137
+              }
+            ],
+            "bottleneck_rank": 2,
+            "optimistic_resource_service_s": 118.85802308190614,
+            "serial_layer_barrier_service_s": 120.04701172327623,
+            "service_metric": "median-measured-wall-s-per-exact-chunk",
+            "chunk_rule": "largest-first-exact-decomposition-with-backtracking"
+          },
+          "bandwidth_requirements_bytes_s": [
+            64321347667.85406,
+            64321347667.85406,
+            64321347667.85406,
+            64321347667.85406
+          ],
+          "predictions": {
+            "serial_layer_barrier": {
+              "elapsed_s": 167.27617014804855,
+              "throughput_tps": 783.5664810115758
+            },
+            "optimistic_full_overlap": {
+              "elapsed_s": 118.85802308190614,
+              "throughput_tps": 1102.761064010606
+            },
+            "throughput_range_tps": [
+              783.5664810115758,
+              1102.761064010606
+            ]
+          },
+          "assumptions": [
+            "diagnostic-model-not-deployment-measurement",
+            "full-overlap-is-optimistic-and-not-a-hardware-bound",
+            "kv-reference-engine-policy-differs",
+            "kv-reference-utilization-differs",
+            "no-rank-bandwidth-aggregation",
+            "serial-layer-barrier-is-a-modelling-scenario-not-a-hardware-bound",
+            "trace-engine-policy-differs"
+          ],
+          "unpublished_reason_count": 0,
+          "missing_evidence": []
+        },
+        {
+          "artifact_kind": "feasibility-analysis",
+          "status": "model-no-headroom",
+          "candidate_class": "neither-profitable",
+          "baseline": {
+            "median_elapsed_s": 46.814905245788395,
+            "throughput_tps": 2799.792060068126,
+            "source_kind": "native-measured",
+            "engine_mode": "native"
+          },
+          "kv_reference": {
+            "median_elapsed_s": 47.22915842477232,
+            "throughput_tps": 2775.2347145624976,
+            "source_kind": "native-measured",
+            "engine_mode": "native",
+            "gpu_memory_utilization": 0.915,
+            "engine_policy_sha256": "d3f4745a0edd6083673b5cf581859d9c1de64570238ea2f5f2a4223b3340fb10"
+          },
+          "actual_kv_increment_bytes_by_rank": [
+            1276772352,
+            1276772352,
+            1276772352,
+            1276772352
+          ],
+          "net_freed_bytes_by_rank": [
+            6895435776,
+            6895435776,
+            6895435776,
+            6895435776
+          ],
+          "time_headroom_s": -0.4142531789839268,
+          "required_overlap_to_match_baseline_s": 40576.3276010151,
+          "transport": {
+            "mode": "gather",
+            "contention": "isolated",
+            "coverage_complete": true,
+            "per_rank": [
+              {
+                "rank": 0,
+                "loaded_bytes": 3011197796352,
+                "copy_count": 228022,
+                "total_service_s": 37370.52367695514,
+                "effective_bandwidth_bytes_s": 80576815.63100176
+              },
+              {
+                "rank": 1,
+                "loaded_bytes": 3011197796352,
+                "copy_count": 228022,
+                "total_service_s": 37361.74405058287,
+                "effective_bandwidth_bytes_s": 80595750.35563746
+              },
+              {
+                "rank": 2,
+                "loaded_bytes": 3011197796352,
+                "copy_count": 228022,
+                "total_service_s": 39891.51297308784,
+                "effective_bandwidth_bytes_s": 75484672.60149936
+              },
+              {
+                "rank": 3,
+                "loaded_bytes": 3011197796352,
+                "copy_count": 228022,
+                "total_service_s": 40465.44623958506,
+                "effective_bandwidth_bytes_s": 74414051.3989023
+              }
+            ],
+            "bottleneck_rank": 3,
+            "optimistic_resource_service_s": 40465.44623958506,
+            "serial_layer_barrier_service_s": 40575.91334783612,
+            "service_metric": "median-measured-wall-s-per-exact-chunk",
+            "chunk_rule": "largest-first-exact-decomposition-with-backtracking"
+          },
+          "bandwidth_requirements_bytes_s": [
+            64321347667.85406,
+            64321347667.85406,
+            64321347667.85406,
+            64321347667.85406
+          ],
+          "predictions": {
+            "serial_layer_barrier": {
+              "elapsed_s": 40623.14250626089,
+              "throughput_tps": 3.2265352189284475
+            },
+            "optimistic_full_overlap": {
+              "elapsed_s": 40465.44623958506,
+              "throughput_tps": 3.2391092198503837
+            },
+            "throughput_range_tps": [
+              3.2265352189284475,
+              3.2391092198503837
+            ]
+          },
+          "assumptions": [
+            "diagnostic-model-not-deployment-measurement",
+            "full-overlap-is-optimistic-and-not-a-hardware-bound",
+            "kv-reference-engine-policy-differs",
+            "kv-reference-utilization-differs",
+            "no-rank-bandwidth-aggregation",
+            "serial-layer-barrier-is-a-modelling-scenario-not-a-hardware-bound",
+            "trace-engine-policy-differs"
+          ],
+          "unpublished_reason_count": 0,
+          "missing_evidence": []
+        }
+      ],
+      "baseline_evidence": {
+        "contract": {
+          "model_identity_sha256": "f197bd16d71c7da5e1472aacaeb3bd213c41d7688695ac857cf30665fe951a59",
+          "model_config_sha256": "2d483c7cabad7c8704478ed4038fa7e7b2eff840bc00a118eccbe38e2b488303",
+          "dataset_sha256": "ae5e2428733c21f39efdd1c6ba45d9dac78e4f00d43a0a930151034eda178445",
+          "input_sha256": "efbd829639331de5e1da036e49fbb898ed7c09035d00fb1dfcb632aff3eaf4bc",
+          "engine_policy_sha256": "8e42dfe870676c81e239ddcc27cb3ab9c8859c070a666bf8f6c09b608c3e3b18",
+          "dataset_manifest_sha256": "d1fa27a78c422ed77b6e44e7c1b642c8cdf3d1a5b1068d7ee0c4996079f8a75b",
+          "commit": "2161d80517315fe9835ee3cf32c98f8e6b0343a7",
+          "tensor_parallel_size": 4,
+          "batch_size": 256,
+          "context_length": 4096,
+          "output_length": 512,
+          "max_num_seqs": 256,
+          "max_num_batched_tokens": 4096,
+          "gpu_memory_utilization": 0.9,
+          "versions": {
+            "cuda": "12.8",
+            "python": "3.12.11",
+            "torch": "2.8.0+cu128",
+            "vllm": "0.10.2",
+            "vllm_commit": "01efc7ef781391e744ed08c3292817a773d654e6"
+          },
+          "hardware_sha256": "9791dbc6d311596ecffb3eb44b417020cb7e142e79a148bc73feb7a0573b4bd1",
+          "source_request_count": 256,
+          "unique_selected_request_count": 224,
+          "evaluation_pool_count": 224,
+          "seed": 20260908,
+          "repeated_request_count": 32,
+          "dtype": "bfloat16",
+          "synthetic": false
+        },
+        "generated_tokens": 131072,
+        "elapsed_s": [
+          46.48389980988577,
+          46.814905245788395,
+          46.89099462190643
+        ],
+        "kv_bytes_by_rank": [
+          34472853504,
+          34472853504,
+          34472853504,
+          34472853504
+        ],
+        "gpu_total_bytes_by_rank": [
+          85017493504,
+          85017493504,
+          85017493504,
+          85017493504
+        ],
+        "source_kind": "native-measured",
+        "engine_mode": "native"
+      },
+      "reference_evidence": {
+        "contract": {
+          "model_identity_sha256": "f197bd16d71c7da5e1472aacaeb3bd213c41d7688695ac857cf30665fe951a59",
+          "model_config_sha256": "2d483c7cabad7c8704478ed4038fa7e7b2eff840bc00a118eccbe38e2b488303",
+          "dataset_sha256": "ae5e2428733c21f39efdd1c6ba45d9dac78e4f00d43a0a930151034eda178445",
+          "input_sha256": "efbd829639331de5e1da036e49fbb898ed7c09035d00fb1dfcb632aff3eaf4bc",
+          "engine_policy_sha256": "d3f4745a0edd6083673b5cf581859d9c1de64570238ea2f5f2a4223b3340fb10",
+          "dataset_manifest_sha256": "d1fa27a78c422ed77b6e44e7c1b642c8cdf3d1a5b1068d7ee0c4996079f8a75b",
+          "commit": "2161d80517315fe9835ee3cf32c98f8e6b0343a7",
+          "tensor_parallel_size": 4,
+          "batch_size": 256,
+          "context_length": 4096,
+          "output_length": 512,
+          "max_num_seqs": 256,
+          "max_num_batched_tokens": 4096,
+          "gpu_memory_utilization": 0.915,
+          "versions": {
+            "cuda": "12.8",
+            "python": "3.12.11",
+            "torch": "2.8.0+cu128",
+            "vllm": "0.10.2",
+            "vllm_commit": "01efc7ef781391e744ed08c3292817a773d654e6"
+          },
+          "hardware_sha256": "9791dbc6d311596ecffb3eb44b417020cb7e142e79a148bc73feb7a0573b4bd1",
+          "source_request_count": 256,
+          "unique_selected_request_count": 224,
+          "evaluation_pool_count": 224,
+          "seed": 20260908,
+          "repeated_request_count": 32,
+          "dtype": "bfloat16",
+          "synthetic": false
+        },
+        "generated_tokens": 131072,
+        "elapsed_s": [
+          46.66931114718318,
+          47.51335653895512,
+          47.22915842477232
+        ],
+        "kv_bytes_by_rank": [
+          35749625856,
+          35749625856,
+          35749625856,
+          35749625856
+        ],
+        "gpu_total_bytes_by_rank": [
+          85017493504,
+          85017493504,
+          85017493504,
+          85017493504
+        ],
+        "source_kind": "native-measured",
+        "engine_mode": "native"
+      },
+      "artifact_kind": "analysis-suite"
+    },
+    {
+      "record_index": 1,
+      "replays": [
+        {
+          "config": {
+            "resident_count_by_layer": [
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410
+            ],
+            "resident_count_total": 19680,
+            "cache_slots": 0,
+            "staging_experts": 512,
+            "policy": "lru",
+            "extra_gpu_bytes": 0
+          },
+          "rank": 0,
+          "model_identity_sha256": "f197bd16d71c7da5e1472aacaeb3bd213c41d7688695ac857cf30665fe951a59",
+          "model_config_sha256": "2d483c7cabad7c8704478ed4038fa7e7b2eff840bc00a118eccbe38e2b488303",
+          "dataset_sha256": "ae5e2428733c21f39efdd1c6ba45d9dac78e4f00d43a0a930151034eda178445",
+          "input_sha256": "efbd829639331de5e1da036e49fbb898ed7c09035d00fb1dfcb632aff3eaf4bc",
+          "commit": "2161d80517315fe9835ee3cf32c98f8e6b0343a7",
+          "hardware_sha256": "9791dbc6d311596ecffb3eb44b417020cb7e142e79a148bc73feb7a0573b4bd1",
+          "loaded_experts": 1914468,
+          "loaded_bytes": 3011197796352,
+          "resident_hits": 13588471,
+          "cache_hits": 0,
+          "demands": 15502939,
+          "bytes_per_generated_token": 22973616.0,
+          "net_freed_bytes": 6895435776,
+          "per_layer_totals": [
+            {
+              "demands": 347323,
+              "resident_hits": 295514,
+              "cache_hits": 0,
+              "loaded_experts": 51809,
+              "loaded_bytes": 81488510976
+            },
+            {
+              "demands": 319404,
+              "resident_hits": 286164,
+              "cache_hits": 0,
+              "loaded_experts": 33240,
+              "loaded_bytes": 52281999360
+            },
+            {
+              "demands": 354713,
+              "resident_hits": 293597,
+              "cache_hits": 0,
+              "loaded_experts": 61116,
+              "loaded_bytes": 96127156224
+            },
+            {
+              "demands": 313957,
+              "resident_hits": 274959,
+              "cache_hits": 0,
+              "loaded_experts": 38998,
+              "loaded_bytes": 61338550272
+            },
+            {
+              "demands": 315390,
+              "resident_hits": 278403,
+              "cache_hits": 0,
+              "loaded_experts": 36987,
+              "loaded_bytes": 58175520768
+            },
+            {
+              "demands": 327492,
+              "resident_hits": 287629,
+              "cache_hits": 0,
+              "loaded_experts": 39863,
+              "loaded_bytes": 62699077632
+            },
+            {
+              "demands": 342516,
+              "resident_hits": 293678,
+              "cache_hits": 0,
+              "loaded_experts": 48838,
+              "loaded_bytes": 76815532032
+            },
+            {
+              "demands": 339072,
+              "resident_hits": 291745,
+              "cache_hits": 0,
+              "loaded_experts": 47327,
+              "loaded_bytes": 74438934528
+            },
+            {
+              "demands": 325378,
+              "resident_hits": 282222,
+              "cache_hits": 0,
+              "loaded_experts": 43156,
+              "loaded_bytes": 67878518784
+            },
+            {
+              "demands": 303274,
+              "resident_hits": 273698,
+              "cache_hits": 0,
+              "loaded_experts": 29576,
+              "loaded_bytes": 46519025664
+            },
+            {
+              "demands": 312855,
+              "resident_hits": 276564,
+              "cache_hits": 0,
+              "loaded_experts": 36291,
+              "loaded_bytes": 57080807424
+            },
+            {
+              "demands": 319463,
+              "resident_hits": 277601,
+              "cache_hits": 0,
+              "loaded_experts": 41862,
+              "loaded_bytes": 65843232768
+            },
+            {
+              "demands": 307324,
+              "resident_hits": 270730,
+              "cache_hits": 0,
+              "loaded_experts": 36594,
+              "loaded_bytes": 57557385216
+            },
+            {
+              "demands": 314720,
+              "resident_hits": 275062,
+              "cache_hits": 0,
+              "loaded_experts": 39658,
+              "loaded_bytes": 62376640512
+            },
+            {
+              "demands": 322780,
+              "resident_hits": 282488,
+              "cache_hits": 0,
+              "loaded_experts": 40292,
+              "loaded_bytes": 63373836288
+            },
+            {
+              "demands": 334346,
+              "resident_hits": 289743,
+              "cache_hits": 0,
+              "loaded_experts": 44603,
+              "loaded_bytes": 70154452992
+            },
+            {
+              "demands": 319815,
+              "resident_hits": 281327,
+              "cache_hits": 0,
+              "loaded_experts": 38488,
+              "loaded_bytes": 60536389632
+            },
+            {
+              "demands": 331564,
+              "resident_hits": 289596,
+              "cache_hits": 0,
+              "loaded_experts": 41968,
+              "loaded_bytes": 66009956352
+            },
+            {
+              "demands": 344007,
+              "resident_hits": 292949,
+              "cache_hits": 0,
+              "loaded_experts": 51058,
+              "loaded_bytes": 80307290112
+            },
+            {
+              "demands": 341540,
+              "resident_hits": 292090,
+              "cache_hits": 0,
+              "loaded_experts": 49450,
+              "loaded_bytes": 77778124800
+            },
+            {
+              "demands": 329005,
+              "resident_hits": 284991,
+              "cache_hits": 0,
+              "loaded_experts": 44014,
+              "loaded_bytes": 69228036096
+            },
+            {
+              "demands": 307538,
+              "resident_hits": 275836,
+              "cache_hits": 0,
+              "loaded_experts": 31702,
+              "loaded_bytes": 49862934528
+            },
+            {
+              "demands": 315052,
+              "resident_hits": 278812,
+              "cache_hits": 0,
+              "loaded_experts": 36240,
+              "loaded_bytes": 57000591360
+            },
+            {
+              "demands": 324001,
+              "resident_hits": 279805,
+              "cache_hits": 0,
+              "loaded_experts": 44196,
+              "loaded_bytes": 69514297344
+            },
+            {
+              "demands": 311551,
+              "resident_hits": 274048,
+              "cache_hits": 0,
+              "loaded_experts": 37503,
+              "loaded_bytes": 58987118592
+            },
+            {
+              "demands": 316712,
+              "resident_hits": 276561,
+              "cache_hits": 0,
+              "loaded_experts": 40151,
+              "loaded_bytes": 63152062464
+            },
+            {
+              "demands": 323168,
+              "resident_hits": 282071,
+              "cache_hits": 0,
+              "loaded_experts": 41097,
+              "loaded_bytes": 64639991808
+            },
+            {
+              "demands": 333825,
+              "resident_hits": 288491,
+              "cache_hits": 0,
+              "loaded_experts": 45334,
+              "loaded_bytes": 71304216576
+            },
+            {
+              "demands": 320071,
+              "resident_hits": 282190,
+              "cache_hits": 0,
+              "loaded_experts": 37881,
+              "loaded_bytes": 59581661184
+            },
+            {
+              "demands": 333053,
+              "resident_hits": 288998,
+              "cache_hits": 0,
+              "loaded_experts": 44055,
+              "loaded_bytes": 69292523520
+            },
+            {
+              "demands": 343070,
+              "resident_hits": 292792,
+              "cache_hits": 0,
+              "loaded_experts": 50278,
+              "loaded_bytes": 79080456192
+            },
+            {
+              "demands": 343113,
+              "resident_hits": 292361,
+              "cache_hits": 0,
+              "loaded_experts": 50752,
+              "loaded_bytes": 79825993728
+            },
+            {
+              "demands": 331128,
+              "resident_hits": 286184,
+              "cache_hits": 0,
+              "loaded_experts": 44944,
+              "loaded_bytes": 70690799616
+            },
+            {
+              "demands": 310221,
+              "resident_hits": 278350,
+              "cache_hits": 0,
+              "loaded_experts": 31871,
+              "loaded_bytes": 50128748544
+            },
+            {
+              "demands": 315602,
+              "resident_hits": 279353,
+              "cache_hits": 0,
+              "loaded_experts": 36249,
+              "loaded_bytes": 57014747136
+            },
+            {
+              "demands": 326249,
+              "resident_hits": 282663,
+              "cache_hits": 0,
+              "loaded_experts": 43586,
+              "loaded_bytes": 68554850304
+            },
+            {
+              "demands": 313686,
+              "resident_hits": 274830,
+              "cache_hits": 0,
+              "loaded_experts": 38856,
+              "loaded_bytes": 61115203584
+            },
+            {
+              "demands": 319787,
+              "resident_hits": 278185,
+              "cache_hits": 0,
+              "loaded_experts": 41602,
+              "loaded_bytes": 65434288128
+            },
+            {
+              "demands": 322901,
+              "resident_hits": 281820,
+              "cache_hits": 0,
+              "loaded_experts": 41081,
+              "loaded_bytes": 64614825984
+            },
+            {
+              "demands": 331754,
+              "resident_hits": 288620,
+              "cache_hits": 0,
+              "loaded_experts": 43134,
+              "loaded_bytes": 67843915776
+            },
+            {
+              "demands": 327509,
+              "resident_hits": 285649,
+              "cache_hits": 0,
+              "loaded_experts": 41860,
+              "loaded_bytes": 65840087040
+            },
+            {
+              "demands": 321263,
+              "resident_hits": 284346,
+              "cache_hits": 0,
+              "loaded_experts": 36917,
+              "loaded_bytes": 58065420288
+            },
+            {
+              "demands": 312881,
+              "resident_hits": 281472,
+              "cache_hits": 0,
+              "loaded_experts": 31409,
+              "loaded_bytes": 49402085376
+            },
+            {
+              "demands": 309943,
+              "resident_hits": 280043,
+              "cache_hits": 0,
+              "loaded_experts": 29900,
+              "loaded_bytes": 47028633600
+            },
+            {
+              "demands": 304472,
+              "resident_hits": 279513,
+              "cache_hits": 0,
+              "loaded_experts": 24959,
+              "loaded_bytes": 39257112576
+            },
+            {
+              "demands": 305688,
+              "resident_hits": 279629,
+              "cache_hits": 0,
+              "loaded_experts": 26059,
+              "loaded_bytes": 40987262976
+            },
+            {
+              "demands": 301690,
+              "resident_hits": 280308,
+              "cache_hits": 0,
+              "loaded_experts": 21382,
+              "loaded_bytes": 33630978048
+            },
+            {
+              "demands": 311073,
+              "resident_hits": 284791,
+              "cache_hits": 0,
+              "loaded_experts": 26282,
+              "loaded_bytes": 41338011648
+            }
+          ],
+          "per_phase_totals": {
+            "prefill": {
+              "demands": 20849,
+              "resident_hits": 18144,
+              "cache_hits": 0,
+              "loaded_experts": 2705,
+              "loaded_bytes": 4254597120
+            },
+            "mixed": {
+              "demands": 5859978,
+              "resident_hits": 5027553,
+              "cache_hits": 0,
+              "loaded_experts": 832425,
+              "loaded_bytes": 1309291315200
+            },
+            "decode": {
+              "demands": 9622112,
+              "resident_hits": 8542774,
+              "cache_hits": 0,
+              "loaded_experts": 1079338,
+              "loaded_bytes": 1697651884032
+            }
+          },
+          "reuse_gap_summary": {
+            "observations": 15502939,
+            "reuse_count": 15478364,
+            "min_event_gap": 48,
+            "max_event_gap": 23184,
+            "mean_event_gap": 57.12987961776839
+          },
+          "staging_overflow_events": 0,
+          "future_policy_reference": false,
+          "assumptions": [
+            "one-load-per-unique-layer-expert-per-event",
+            "event-start-hit-classification",
+            "persistent-global-cache"
+          ],
+          "unpublished_reason_count": 0
+        },
+        {
+          "config": {
+            "resident_count_by_layer": [
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410
+            ],
+            "resident_count_total": 19680,
+            "cache_slots": 0,
+            "staging_experts": 512,
+            "policy": "lru",
+            "extra_gpu_bytes": 0
+          },
+          "rank": 1,
+          "model_identity_sha256": "f197bd16d71c7da5e1472aacaeb3bd213c41d7688695ac857cf30665fe951a59",
+          "model_config_sha256": "2d483c7cabad7c8704478ed4038fa7e7b2eff840bc00a118eccbe38e2b488303",
+          "dataset_sha256": "ae5e2428733c21f39efdd1c6ba45d9dac78e4f00d43a0a930151034eda178445",
+          "input_sha256": "efbd829639331de5e1da036e49fbb898ed7c09035d00fb1dfcb632aff3eaf4bc",
+          "commit": "2161d80517315fe9835ee3cf32c98f8e6b0343a7",
+          "hardware_sha256": "9791dbc6d311596ecffb3eb44b417020cb7e142e79a148bc73feb7a0573b4bd1",
+          "loaded_experts": 1914468,
+          "loaded_bytes": 3011197796352,
+          "resident_hits": 13588471,
+          "cache_hits": 0,
+          "demands": 15502939,
+          "bytes_per_generated_token": 22973616.0,
+          "net_freed_bytes": 6895435776,
+          "per_layer_totals": [
+            {
+              "demands": 347323,
+              "resident_hits": 295514,
+              "cache_hits": 0,
+              "loaded_experts": 51809,
+              "loaded_bytes": 81488510976
+            },
+            {
+              "demands": 319404,
+              "resident_hits": 286164,
+              "cache_hits": 0,
+              "loaded_experts": 33240,
+              "loaded_bytes": 52281999360
+            },
+            {
+              "demands": 354713,
+              "resident_hits": 293597,
+              "cache_hits": 0,
+              "loaded_experts": 61116,
+              "loaded_bytes": 96127156224
+            },
+            {
+              "demands": 313957,
+              "resident_hits": 274959,
+              "cache_hits": 0,
+              "loaded_experts": 38998,
+              "loaded_bytes": 61338550272
+            },
+            {
+              "demands": 315390,
+              "resident_hits": 278403,
+              "cache_hits": 0,
+              "loaded_experts": 36987,
+              "loaded_bytes": 58175520768
+            },
+            {
+              "demands": 327492,
+              "resident_hits": 287629,
+              "cache_hits": 0,
+              "loaded_experts": 39863,
+              "loaded_bytes": 62699077632
+            },
+            {
+              "demands": 342516,
+              "resident_hits": 293678,
+              "cache_hits": 0,
+              "loaded_experts": 48838,
+              "loaded_bytes": 76815532032
+            },
+            {
+              "demands": 339072,
+              "resident_hits": 291745,
+              "cache_hits": 0,
+              "loaded_experts": 47327,
+              "loaded_bytes": 74438934528
+            },
+            {
+              "demands": 325378,
+              "resident_hits": 282222,
+              "cache_hits": 0,
+              "loaded_experts": 43156,
+              "loaded_bytes": 67878518784
+            },
+            {
+              "demands": 303274,
+              "resident_hits": 273698,
+              "cache_hits": 0,
+              "loaded_experts": 29576,
+              "loaded_bytes": 46519025664
+            },
+            {
+              "demands": 312855,
+              "resident_hits": 276564,
+              "cache_hits": 0,
+              "loaded_experts": 36291,
+              "loaded_bytes": 57080807424
+            },
+            {
+              "demands": 319463,
+              "resident_hits": 277601,
+              "cache_hits": 0,
+              "loaded_experts": 41862,
+              "loaded_bytes": 65843232768
+            },
+            {
+              "demands": 307324,
+              "resident_hits": 270730,
+              "cache_hits": 0,
+              "loaded_experts": 36594,
+              "loaded_bytes": 57557385216
+            },
+            {
+              "demands": 314720,
+              "resident_hits": 275062,
+              "cache_hits": 0,
+              "loaded_experts": 39658,
+              "loaded_bytes": 62376640512
+            },
+            {
+              "demands": 322780,
+              "resident_hits": 282488,
+              "cache_hits": 0,
+              "loaded_experts": 40292,
+              "loaded_bytes": 63373836288
+            },
+            {
+              "demands": 334346,
+              "resident_hits": 289743,
+              "cache_hits": 0,
+              "loaded_experts": 44603,
+              "loaded_bytes": 70154452992
+            },
+            {
+              "demands": 319815,
+              "resident_hits": 281327,
+              "cache_hits": 0,
+              "loaded_experts": 38488,
+              "loaded_bytes": 60536389632
+            },
+            {
+              "demands": 331564,
+              "resident_hits": 289596,
+              "cache_hits": 0,
+              "loaded_experts": 41968,
+              "loaded_bytes": 66009956352
+            },
+            {
+              "demands": 344007,
+              "resident_hits": 292949,
+              "cache_hits": 0,
+              "loaded_experts": 51058,
+              "loaded_bytes": 80307290112
+            },
+            {
+              "demands": 341540,
+              "resident_hits": 292090,
+              "cache_hits": 0,
+              "loaded_experts": 49450,
+              "loaded_bytes": 77778124800
+            },
+            {
+              "demands": 329005,
+              "resident_hits": 284991,
+              "cache_hits": 0,
+              "loaded_experts": 44014,
+              "loaded_bytes": 69228036096
+            },
+            {
+              "demands": 307538,
+              "resident_hits": 275836,
+              "cache_hits": 0,
+              "loaded_experts": 31702,
+              "loaded_bytes": 49862934528
+            },
+            {
+              "demands": 315052,
+              "resident_hits": 278812,
+              "cache_hits": 0,
+              "loaded_experts": 36240,
+              "loaded_bytes": 57000591360
+            },
+            {
+              "demands": 324001,
+              "resident_hits": 279805,
+              "cache_hits": 0,
+              "loaded_experts": 44196,
+              "loaded_bytes": 69514297344
+            },
+            {
+              "demands": 311551,
+              "resident_hits": 274048,
+              "cache_hits": 0,
+              "loaded_experts": 37503,
+              "loaded_bytes": 58987118592
+            },
+            {
+              "demands": 316712,
+              "resident_hits": 276561,
+              "cache_hits": 0,
+              "loaded_experts": 40151,
+              "loaded_bytes": 63152062464
+            },
+            {
+              "demands": 323168,
+              "resident_hits": 282071,
+              "cache_hits": 0,
+              "loaded_experts": 41097,
+              "loaded_bytes": 64639991808
+            },
+            {
+              "demands": 333825,
+              "resident_hits": 288491,
+              "cache_hits": 0,
+              "loaded_experts": 45334,
+              "loaded_bytes": 71304216576
+            },
+            {
+              "demands": 320071,
+              "resident_hits": 282190,
+              "cache_hits": 0,
+              "loaded_experts": 37881,
+              "loaded_bytes": 59581661184
+            },
+            {
+              "demands": 333053,
+              "resident_hits": 288998,
+              "cache_hits": 0,
+              "loaded_experts": 44055,
+              "loaded_bytes": 69292523520
+            },
+            {
+              "demands": 343070,
+              "resident_hits": 292792,
+              "cache_hits": 0,
+              "loaded_experts": 50278,
+              "loaded_bytes": 79080456192
+            },
+            {
+              "demands": 343113,
+              "resident_hits": 292361,
+              "cache_hits": 0,
+              "loaded_experts": 50752,
+              "loaded_bytes": 79825993728
+            },
+            {
+              "demands": 331128,
+              "resident_hits": 286184,
+              "cache_hits": 0,
+              "loaded_experts": 44944,
+              "loaded_bytes": 70690799616
+            },
+            {
+              "demands": 310221,
+              "resident_hits": 278350,
+              "cache_hits": 0,
+              "loaded_experts": 31871,
+              "loaded_bytes": 50128748544
+            },
+            {
+              "demands": 315602,
+              "resident_hits": 279353,
+              "cache_hits": 0,
+              "loaded_experts": 36249,
+              "loaded_bytes": 57014747136
+            },
+            {
+              "demands": 326249,
+              "resident_hits": 282663,
+              "cache_hits": 0,
+              "loaded_experts": 43586,
+              "loaded_bytes": 68554850304
+            },
+            {
+              "demands": 313686,
+              "resident_hits": 274830,
+              "cache_hits": 0,
+              "loaded_experts": 38856,
+              "loaded_bytes": 61115203584
+            },
+            {
+              "demands": 319787,
+              "resident_hits": 278185,
+              "cache_hits": 0,
+              "loaded_experts": 41602,
+              "loaded_bytes": 65434288128
+            },
+            {
+              "demands": 322901,
+              "resident_hits": 281820,
+              "cache_hits": 0,
+              "loaded_experts": 41081,
+              "loaded_bytes": 64614825984
+            },
+            {
+              "demands": 331754,
+              "resident_hits": 288620,
+              "cache_hits": 0,
+              "loaded_experts": 43134,
+              "loaded_bytes": 67843915776
+            },
+            {
+              "demands": 327509,
+              "resident_hits": 285649,
+              "cache_hits": 0,
+              "loaded_experts": 41860,
+              "loaded_bytes": 65840087040
+            },
+            {
+              "demands": 321263,
+              "resident_hits": 284346,
+              "cache_hits": 0,
+              "loaded_experts": 36917,
+              "loaded_bytes": 58065420288
+            },
+            {
+              "demands": 312881,
+              "resident_hits": 281472,
+              "cache_hits": 0,
+              "loaded_experts": 31409,
+              "loaded_bytes": 49402085376
+            },
+            {
+              "demands": 309943,
+              "resident_hits": 280043,
+              "cache_hits": 0,
+              "loaded_experts": 29900,
+              "loaded_bytes": 47028633600
+            },
+            {
+              "demands": 304472,
+              "resident_hits": 279513,
+              "cache_hits": 0,
+              "loaded_experts": 24959,
+              "loaded_bytes": 39257112576
+            },
+            {
+              "demands": 305688,
+              "resident_hits": 279629,
+              "cache_hits": 0,
+              "loaded_experts": 26059,
+              "loaded_bytes": 40987262976
+            },
+            {
+              "demands": 301690,
+              "resident_hits": 280308,
+              "cache_hits": 0,
+              "loaded_experts": 21382,
+              "loaded_bytes": 33630978048
+            },
+            {
+              "demands": 311073,
+              "resident_hits": 284791,
+              "cache_hits": 0,
+              "loaded_experts": 26282,
+              "loaded_bytes": 41338011648
+            }
+          ],
+          "per_phase_totals": {
+            "prefill": {
+              "demands": 20849,
+              "resident_hits": 18144,
+              "cache_hits": 0,
+              "loaded_experts": 2705,
+              "loaded_bytes": 4254597120
+            },
+            "mixed": {
+              "demands": 5859978,
+              "resident_hits": 5027553,
+              "cache_hits": 0,
+              "loaded_experts": 832425,
+              "loaded_bytes": 1309291315200
+            },
+            "decode": {
+              "demands": 9622112,
+              "resident_hits": 8542774,
+              "cache_hits": 0,
+              "loaded_experts": 1079338,
+              "loaded_bytes": 1697651884032
+            }
+          },
+          "reuse_gap_summary": {
+            "observations": 15502939,
+            "reuse_count": 15478364,
+            "min_event_gap": 48,
+            "max_event_gap": 23184,
+            "mean_event_gap": 57.12987961776839
+          },
+          "staging_overflow_events": 0,
+          "future_policy_reference": false,
+          "assumptions": [
+            "one-load-per-unique-layer-expert-per-event",
+            "event-start-hit-classification",
+            "persistent-global-cache"
+          ],
+          "unpublished_reason_count": 0
+        },
+        {
+          "config": {
+            "resident_count_by_layer": [
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410
+            ],
+            "resident_count_total": 19680,
+            "cache_slots": 0,
+            "staging_experts": 512,
+            "policy": "lru",
+            "extra_gpu_bytes": 0
+          },
+          "rank": 2,
+          "model_identity_sha256": "f197bd16d71c7da5e1472aacaeb3bd213c41d7688695ac857cf30665fe951a59",
+          "model_config_sha256": "2d483c7cabad7c8704478ed4038fa7e7b2eff840bc00a118eccbe38e2b488303",
+          "dataset_sha256": "ae5e2428733c21f39efdd1c6ba45d9dac78e4f00d43a0a930151034eda178445",
+          "input_sha256": "efbd829639331de5e1da036e49fbb898ed7c09035d00fb1dfcb632aff3eaf4bc",
+          "commit": "2161d80517315fe9835ee3cf32c98f8e6b0343a7",
+          "hardware_sha256": "9791dbc6d311596ecffb3eb44b417020cb7e142e79a148bc73feb7a0573b4bd1",
+          "loaded_experts": 1914468,
+          "loaded_bytes": 3011197796352,
+          "resident_hits": 13588471,
+          "cache_hits": 0,
+          "demands": 15502939,
+          "bytes_per_generated_token": 22973616.0,
+          "net_freed_bytes": 6895435776,
+          "per_layer_totals": [
+            {
+              "demands": 347323,
+              "resident_hits": 295514,
+              "cache_hits": 0,
+              "loaded_experts": 51809,
+              "loaded_bytes": 81488510976
+            },
+            {
+              "demands": 319404,
+              "resident_hits": 286164,
+              "cache_hits": 0,
+              "loaded_experts": 33240,
+              "loaded_bytes": 52281999360
+            },
+            {
+              "demands": 354713,
+              "resident_hits": 293597,
+              "cache_hits": 0,
+              "loaded_experts": 61116,
+              "loaded_bytes": 96127156224
+            },
+            {
+              "demands": 313957,
+              "resident_hits": 274959,
+              "cache_hits": 0,
+              "loaded_experts": 38998,
+              "loaded_bytes": 61338550272
+            },
+            {
+              "demands": 315390,
+              "resident_hits": 278403,
+              "cache_hits": 0,
+              "loaded_experts": 36987,
+              "loaded_bytes": 58175520768
+            },
+            {
+              "demands": 327492,
+              "resident_hits": 287629,
+              "cache_hits": 0,
+              "loaded_experts": 39863,
+              "loaded_bytes": 62699077632
+            },
+            {
+              "demands": 342516,
+              "resident_hits": 293678,
+              "cache_hits": 0,
+              "loaded_experts": 48838,
+              "loaded_bytes": 76815532032
+            },
+            {
+              "demands": 339072,
+              "resident_hits": 291745,
+              "cache_hits": 0,
+              "loaded_experts": 47327,
+              "loaded_bytes": 74438934528
+            },
+            {
+              "demands": 325378,
+              "resident_hits": 282222,
+              "cache_hits": 0,
+              "loaded_experts": 43156,
+              "loaded_bytes": 67878518784
+            },
+            {
+              "demands": 303274,
+              "resident_hits": 273698,
+              "cache_hits": 0,
+              "loaded_experts": 29576,
+              "loaded_bytes": 46519025664
+            },
+            {
+              "demands": 312855,
+              "resident_hits": 276564,
+              "cache_hits": 0,
+              "loaded_experts": 36291,
+              "loaded_bytes": 57080807424
+            },
+            {
+              "demands": 319463,
+              "resident_hits": 277601,
+              "cache_hits": 0,
+              "loaded_experts": 41862,
+              "loaded_bytes": 65843232768
+            },
+            {
+              "demands": 307324,
+              "resident_hits": 270730,
+              "cache_hits": 0,
+              "loaded_experts": 36594,
+              "loaded_bytes": 57557385216
+            },
+            {
+              "demands": 314720,
+              "resident_hits": 275062,
+              "cache_hits": 0,
+              "loaded_experts": 39658,
+              "loaded_bytes": 62376640512
+            },
+            {
+              "demands": 322780,
+              "resident_hits": 282488,
+              "cache_hits": 0,
+              "loaded_experts": 40292,
+              "loaded_bytes": 63373836288
+            },
+            {
+              "demands": 334346,
+              "resident_hits": 289743,
+              "cache_hits": 0,
+              "loaded_experts": 44603,
+              "loaded_bytes": 70154452992
+            },
+            {
+              "demands": 319815,
+              "resident_hits": 281327,
+              "cache_hits": 0,
+              "loaded_experts": 38488,
+              "loaded_bytes": 60536389632
+            },
+            {
+              "demands": 331564,
+              "resident_hits": 289596,
+              "cache_hits": 0,
+              "loaded_experts": 41968,
+              "loaded_bytes": 66009956352
+            },
+            {
+              "demands": 344007,
+              "resident_hits": 292949,
+              "cache_hits": 0,
+              "loaded_experts": 51058,
+              "loaded_bytes": 80307290112
+            },
+            {
+              "demands": 341540,
+              "resident_hits": 292090,
+              "cache_hits": 0,
+              "loaded_experts": 49450,
+              "loaded_bytes": 77778124800
+            },
+            {
+              "demands": 329005,
+              "resident_hits": 284991,
+              "cache_hits": 0,
+              "loaded_experts": 44014,
+              "loaded_bytes": 69228036096
+            },
+            {
+              "demands": 307538,
+              "resident_hits": 275836,
+              "cache_hits": 0,
+              "loaded_experts": 31702,
+              "loaded_bytes": 49862934528
+            },
+            {
+              "demands": 315052,
+              "resident_hits": 278812,
+              "cache_hits": 0,
+              "loaded_experts": 36240,
+              "loaded_bytes": 57000591360
+            },
+            {
+              "demands": 324001,
+              "resident_hits": 279805,
+              "cache_hits": 0,
+              "loaded_experts": 44196,
+              "loaded_bytes": 69514297344
+            },
+            {
+              "demands": 311551,
+              "resident_hits": 274048,
+              "cache_hits": 0,
+              "loaded_experts": 37503,
+              "loaded_bytes": 58987118592
+            },
+            {
+              "demands": 316712,
+              "resident_hits": 276561,
+              "cache_hits": 0,
+              "loaded_experts": 40151,
+              "loaded_bytes": 63152062464
+            },
+            {
+              "demands": 323168,
+              "resident_hits": 282071,
+              "cache_hits": 0,
+              "loaded_experts": 41097,
+              "loaded_bytes": 64639991808
+            },
+            {
+              "demands": 333825,
+              "resident_hits": 288491,
+              "cache_hits": 0,
+              "loaded_experts": 45334,
+              "loaded_bytes": 71304216576
+            },
+            {
+              "demands": 320071,
+              "resident_hits": 282190,
+              "cache_hits": 0,
+              "loaded_experts": 37881,
+              "loaded_bytes": 59581661184
+            },
+            {
+              "demands": 333053,
+              "resident_hits": 288998,
+              "cache_hits": 0,
+              "loaded_experts": 44055,
+              "loaded_bytes": 69292523520
+            },
+            {
+              "demands": 343070,
+              "resident_hits": 292792,
+              "cache_hits": 0,
+              "loaded_experts": 50278,
+              "loaded_bytes": 79080456192
+            },
+            {
+              "demands": 343113,
+              "resident_hits": 292361,
+              "cache_hits": 0,
+              "loaded_experts": 50752,
+              "loaded_bytes": 79825993728
+            },
+            {
+              "demands": 331128,
+              "resident_hits": 286184,
+              "cache_hits": 0,
+              "loaded_experts": 44944,
+              "loaded_bytes": 70690799616
+            },
+            {
+              "demands": 310221,
+              "resident_hits": 278350,
+              "cache_hits": 0,
+              "loaded_experts": 31871,
+              "loaded_bytes": 50128748544
+            },
+            {
+              "demands": 315602,
+              "resident_hits": 279353,
+              "cache_hits": 0,
+              "loaded_experts": 36249,
+              "loaded_bytes": 57014747136
+            },
+            {
+              "demands": 326249,
+              "resident_hits": 282663,
+              "cache_hits": 0,
+              "loaded_experts": 43586,
+              "loaded_bytes": 68554850304
+            },
+            {
+              "demands": 313686,
+              "resident_hits": 274830,
+              "cache_hits": 0,
+              "loaded_experts": 38856,
+              "loaded_bytes": 61115203584
+            },
+            {
+              "demands": 319787,
+              "resident_hits": 278185,
+              "cache_hits": 0,
+              "loaded_experts": 41602,
+              "loaded_bytes": 65434288128
+            },
+            {
+              "demands": 322901,
+              "resident_hits": 281820,
+              "cache_hits": 0,
+              "loaded_experts": 41081,
+              "loaded_bytes": 64614825984
+            },
+            {
+              "demands": 331754,
+              "resident_hits": 288620,
+              "cache_hits": 0,
+              "loaded_experts": 43134,
+              "loaded_bytes": 67843915776
+            },
+            {
+              "demands": 327509,
+              "resident_hits": 285649,
+              "cache_hits": 0,
+              "loaded_experts": 41860,
+              "loaded_bytes": 65840087040
+            },
+            {
+              "demands": 321263,
+              "resident_hits": 284346,
+              "cache_hits": 0,
+              "loaded_experts": 36917,
+              "loaded_bytes": 58065420288
+            },
+            {
+              "demands": 312881,
+              "resident_hits": 281472,
+              "cache_hits": 0,
+              "loaded_experts": 31409,
+              "loaded_bytes": 49402085376
+            },
+            {
+              "demands": 309943,
+              "resident_hits": 280043,
+              "cache_hits": 0,
+              "loaded_experts": 29900,
+              "loaded_bytes": 47028633600
+            },
+            {
+              "demands": 304472,
+              "resident_hits": 279513,
+              "cache_hits": 0,
+              "loaded_experts": 24959,
+              "loaded_bytes": 39257112576
+            },
+            {
+              "demands": 305688,
+              "resident_hits": 279629,
+              "cache_hits": 0,
+              "loaded_experts": 26059,
+              "loaded_bytes": 40987262976
+            },
+            {
+              "demands": 301690,
+              "resident_hits": 280308,
+              "cache_hits": 0,
+              "loaded_experts": 21382,
+              "loaded_bytes": 33630978048
+            },
+            {
+              "demands": 311073,
+              "resident_hits": 284791,
+              "cache_hits": 0,
+              "loaded_experts": 26282,
+              "loaded_bytes": 41338011648
+            }
+          ],
+          "per_phase_totals": {
+            "prefill": {
+              "demands": 20849,
+              "resident_hits": 18144,
+              "cache_hits": 0,
+              "loaded_experts": 2705,
+              "loaded_bytes": 4254597120
+            },
+            "mixed": {
+              "demands": 5859978,
+              "resident_hits": 5027553,
+              "cache_hits": 0,
+              "loaded_experts": 832425,
+              "loaded_bytes": 1309291315200
+            },
+            "decode": {
+              "demands": 9622112,
+              "resident_hits": 8542774,
+              "cache_hits": 0,
+              "loaded_experts": 1079338,
+              "loaded_bytes": 1697651884032
+            }
+          },
+          "reuse_gap_summary": {
+            "observations": 15502939,
+            "reuse_count": 15478364,
+            "min_event_gap": 48,
+            "max_event_gap": 23184,
+            "mean_event_gap": 57.12987961776839
+          },
+          "staging_overflow_events": 0,
+          "future_policy_reference": false,
+          "assumptions": [
+            "one-load-per-unique-layer-expert-per-event",
+            "event-start-hit-classification",
+            "persistent-global-cache"
+          ],
+          "unpublished_reason_count": 0
+        },
+        {
+          "config": {
+            "resident_count_by_layer": [
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410,
+              410
+            ],
+            "resident_count_total": 19680,
+            "cache_slots": 0,
+            "staging_experts": 512,
+            "policy": "lru",
+            "extra_gpu_bytes": 0
+          },
+          "rank": 3,
+          "model_identity_sha256": "f197bd16d71c7da5e1472aacaeb3bd213c41d7688695ac857cf30665fe951a59",
+          "model_config_sha256": "2d483c7cabad7c8704478ed4038fa7e7b2eff840bc00a118eccbe38e2b488303",
+          "dataset_sha256": "ae5e2428733c21f39efdd1c6ba45d9dac78e4f00d43a0a930151034eda178445",
+          "input_sha256": "efbd829639331de5e1da036e49fbb898ed7c09035d00fb1dfcb632aff3eaf4bc",
+          "commit": "2161d80517315fe9835ee3cf32c98f8e6b0343a7",
+          "hardware_sha256": "9791dbc6d311596ecffb3eb44b417020cb7e142e79a148bc73feb7a0573b4bd1",
+          "loaded_experts": 1914468,
+          "loaded_bytes": 3011197796352,
+          "resident_hits": 13588471,
+          "cache_hits": 0,
+          "demands": 15502939,
+          "bytes_per_generated_token": 22973616.0,
+          "net_freed_bytes": 6895435776,
+          "per_layer_totals": [
+            {
+              "demands": 347323,
+              "resident_hits": 295514,
+              "cache_hits": 0,
+              "loaded_experts": 51809,
+              "loaded_bytes": 81488510976
+            },
+            {
+              "demands": 319404,
+              "resident_hits": 286164,
+              "cache_hits": 0,
+              "loaded_experts": 33240,
+              "loaded_bytes": 52281999360
+            },
+            {
+              "demands": 354713,
+              "resident_hits": 293597,
+              "cache_hits": 0,
+              "loaded_experts": 61116,
+              "loaded_bytes": 96127156224
+            },
+            {
+              "demands": 313957,
+              "resident_hits": 274959,
+              "cache_hits": 0,
+              "loaded_experts": 38998,
+              "loaded_bytes": 61338550272
+            },
+            {
+              "demands": 315390,
+              "resident_hits": 278403,
+              "cache_hits": 0,
+              "loaded_experts": 36987,
+              "loaded_bytes": 58175520768
+            },
+            {
+              "demands": 327492,
+              "resident_hits": 287629,
+              "cache_hits": 0,
+              "loaded_experts": 39863,
+              "loaded_bytes": 62699077632
+            },
+            {
+              "demands": 342516,
+              "resident_hits": 293678,
+              "cache_hits": 0,
+              "loaded_experts": 48838,
+              "loaded_bytes": 76815532032
+            },
+            {
+              "demands": 339072,
+              "resident_hits": 291745,
+              "cache_hits": 0,
+              "loaded_experts": 47327,
+              "loaded_bytes": 74438934528
+            },
+            {
+              "demands": 325378,
+              "resident_hits": 282222,
+              "cache_hits": 0,
+              "loaded_experts": 43156,
+              "loaded_bytes": 67878518784
+            },
+            {
+              "demands": 303274,
+              "resident_hits": 273698,
+              "cache_hits": 0,
+              "loaded_experts": 29576,
+              "loaded_bytes": 46519025664
+            },
+            {
+              "demands": 312855,
+              "resident_hits": 276564,
+              "cache_hits": 0,
+              "loaded_experts": 36291,
+              "loaded_bytes": 57080807424
+            },
+            {
+              "demands": 319463,
+              "resident_hits": 277601,
+              "cache_hits": 0,
+              "loaded_experts": 41862,
+              "loaded_bytes": 65843232768
+            },
+            {
+              "demands": 307324,
+              "resident_hits": 270730,
+              "cache_hits": 0,
+              "loaded_experts": 36594,
+              "loaded_bytes": 57557385216
+            },
+            {
+              "demands": 314720,
+              "resident_hits": 275062,
+              "cache_hits": 0,
+              "loaded_experts": 39658,
+              "loaded_bytes": 62376640512
+            },
+            {
+              "demands": 322780,
+              "resident_hits": 282488,
+              "cache_hits": 0,
+              "loaded_experts": 40292,
+              "loaded_bytes": 63373836288
+            },
+            {
+              "demands": 334346,
+              "resident_hits": 289743,
+              "cache_hits": 0,
+              "loaded_experts": 44603,
+              "loaded_bytes": 70154452992
+            },
+            {
+              "demands": 319815,
+              "resident_hits": 281327,
+              "cache_hits": 0,
+              "loaded_experts": 38488,
+              "loaded_bytes": 60536389632
+            },
+            {
+              "demands": 331564,
+              "resident_hits": 289596,
+              "cache_hits": 0,
+              "loaded_experts": 41968,
+              "loaded_bytes": 66009956352
+            },
+            {
+              "demands": 344007,
+              "resident_hits": 292949,
+              "cache_hits": 0,
+              "loaded_experts": 51058,
+              "loaded_bytes": 80307290112
+            },
+            {
+              "demands": 341540,
+              "resident_hits": 292090,
+              "cache_hits": 0,
+              "loaded_experts": 49450,
+              "loaded_bytes": 77778124800
+            },
+            {
+              "demands": 329005,
+              "resident_hits": 284991,
+              "cache_hits": 0,
+              "loaded_experts": 44014,
+              "loaded_bytes": 69228036096
+            },
+            {
+              "demands": 307538,
+              "resident_hits": 275836,
+              "cache_hits": 0,
+              "loaded_experts": 31702,
+              "loaded_bytes": 49862934528
+            },
+            {
+              "demands": 315052,
+              "resident_hits": 278812,
+              "cache_hits": 0,
+              "loaded_experts": 36240,
+              "loaded_bytes": 57000591360
+            },
+            {
+              "demands": 324001,
+              "resident_hits": 279805,
+              "cache_hits": 0,
+              "loaded_experts": 44196,
+              "loaded_bytes": 69514297344
+            },
+            {
+              "demands": 311551,
+              "resident_hits": 274048,
+              "cache_hits": 0,
+              "loaded_experts": 37503,
+              "loaded_bytes": 58987118592
+            },
+            {
+              "demands": 316712,
+              "resident_hits": 276561,
+              "cache_hits": 0,
+              "loaded_experts": 40151,
+              "loaded_bytes": 63152062464
+            },
+            {
+              "demands": 323168,
+              "resident_hits": 282071,
+              "cache_hits": 0,
+              "loaded_experts": 41097,
+              "loaded_bytes": 64639991808
+            },
+            {
+              "demands": 333825,
+              "resident_hits": 288491,
+              "cache_hits": 0,
+              "loaded_experts": 45334,
+              "loaded_bytes": 71304216576
+            },
+            {
+              "demands": 320071,
+              "resident_hits": 282190,
+              "cache_hits": 0,
+              "loaded_experts": 37881,
+              "loaded_bytes": 59581661184
+            },
+            {
+              "demands": 333053,
+              "resident_hits": 288998,
+              "cache_hits": 0,
+              "loaded_experts": 44055,
+              "loaded_bytes": 69292523520
+            },
+            {
+              "demands": 343070,
+              "resident_hits": 292792,
+              "cache_hits": 0,
+              "loaded_experts": 50278,
+              "loaded_bytes": 79080456192
+            },
+            {
+              "demands": 343113,
+              "resident_hits": 292361,
+              "cache_hits": 0,
+              "loaded_experts": 50752,
+              "loaded_bytes": 79825993728
+            },
+            {
+              "demands": 331128,
+              "resident_hits": 286184,
+              "cache_hits": 0,
+              "loaded_experts": 44944,
+              "loaded_bytes": 70690799616
+            },
+            {
+              "demands": 310221,
+              "resident_hits": 278350,
+              "cache_hits": 0,
+              "loaded_experts": 31871,
+              "loaded_bytes": 50128748544
+            },
+            {
+              "demands": 315602,
+              "resident_hits": 279353,
+              "cache_hits": 0,
+              "loaded_experts": 36249,
+              "loaded_bytes": 57014747136
+            },
+            {
+              "demands": 326249,
+              "resident_hits": 282663,
+              "cache_hits": 0,
+              "loaded_experts": 43586,
+              "loaded_bytes": 68554850304
+            },
+            {
+              "demands": 313686,
+              "resident_hits": 274830,
+              "cache_hits": 0,
+              "loaded_experts": 38856,
+              "loaded_bytes": 61115203584
+            },
+            {
+              "demands": 319787,
+              "resident_hits": 278185,
+              "cache_hits": 0,
+              "loaded_experts": 41602,
+              "loaded_bytes": 65434288128
+            },
+            {
+              "demands": 322901,
+              "resident_hits": 281820,
+              "cache_hits": 0,
+              "loaded_experts": 41081,
+              "loaded_bytes": 64614825984
+            },
+            {
+              "demands": 331754,
+              "resident_hits": 288620,
+              "cache_hits": 0,
+              "loaded_experts": 43134,
+              "loaded_bytes": 67843915776
+            },
+            {
+              "demands": 327509,
+              "resident_hits": 285649,
+              "cache_hits": 0,
+              "loaded_experts": 41860,
+              "loaded_bytes": 65840087040
+            },
+            {
+              "demands": 321263,
+              "resident_hits": 284346,
+              "cache_hits": 0,
+              "loaded_experts": 36917,
+              "loaded_bytes": 58065420288
+            },
+            {
+              "demands": 312881,
+              "resident_hits": 281472,
+              "cache_hits": 0,
+              "loaded_experts": 31409,
+              "loaded_bytes": 49402085376
+            },
+            {
+              "demands": 309943,
+              "resident_hits": 280043,
+              "cache_hits": 0,
+              "loaded_experts": 29900,
+              "loaded_bytes": 47028633600
+            },
+            {
+              "demands": 304472,
+              "resident_hits": 279513,
+              "cache_hits": 0,
+              "loaded_experts": 24959,
+              "loaded_bytes": 39257112576
+            },
+            {
+              "demands": 305688,
+              "resident_hits": 279629,
+              "cache_hits": 0,
+              "loaded_experts": 26059,
+              "loaded_bytes": 40987262976
+            },
+            {
+              "demands": 301690,
+              "resident_hits": 280308,
+              "cache_hits": 0,
+              "loaded_experts": 21382,
+              "loaded_bytes": 33630978048
+            },
+            {
+              "demands": 311073,
+              "resident_hits": 284791,
+              "cache_hits": 0,
+              "loaded_experts": 26282,
+              "loaded_bytes": 41338011648
+            }
+          ],
+          "per_phase_totals": {
+            "prefill": {
+              "demands": 20849,
+              "resident_hits": 18144,
+              "cache_hits": 0,
+              "loaded_experts": 2705,
+              "loaded_bytes": 4254597120
+            },
+            "mixed": {
+              "demands": 5859978,
+              "resident_hits": 5027553,
+              "cache_hits": 0,
+              "loaded_experts": 832425,
+              "loaded_bytes": 1309291315200
+            },
+            "decode": {
+              "demands": 9622112,
+              "resident_hits": 8542774,
+              "cache_hits": 0,
+              "loaded_experts": 1079338,
+              "loaded_bytes": 1697651884032
+            }
+          },
+          "reuse_gap_summary": {
+            "observations": 15502939,
+            "reuse_count": 15478364,
+            "min_event_gap": 48,
+            "max_event_gap": 23184,
+            "mean_event_gap": 57.12987961776839
+          },
+          "staging_overflow_events": 0,
+          "future_policy_reference": false,
+          "assumptions": [
+            "one-load-per-unique-layer-expert-per-event",
+            "event-start-hit-classification",
+            "persistent-global-cache"
+          ],
+          "unpublished_reason_count": 0
+        }
+      ],
+      "calibration_input_hashes": [
+        "c3219fdfd46165a5795d524715caae80a40a972432f692ed9012faa9f475d12f",
+        "c3219fdfd46165a5795d524715caae80a40a972432f692ed9012faa9f475d12f",
+        "c3219fdfd46165a5795d524715caae80a40a972432f692ed9012faa9f475d12f",
+        "c3219fdfd46165a5795d524715caae80a40a972432f692ed9012faa9f475d12f"
+      ],
+      "artifact_kind": "replay-suite"
+    }
+  ]
+}
