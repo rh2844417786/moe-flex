@@ -44,6 +44,8 @@ trace 单独运行，强制 eager 且不是吞吐证据。复用现有 vLLM 校�
 
 每次测量前 rank barrier/GPU 同步；分别记录 CPU gather、CUDA copy、计算、端到端 wall 和总字节。收尾同步后读取 CUDA events。按瓶颈 rank 时间计算 aggregate，计算/通信竞争不得重叠计数两次。记录可用 CPU affinity/NUMA/PCIe 拓扑为本地诊断，公开仅脱敏身份 hash/数值或 unavailable。资源上限、warmup/repetitions、明确超时、错误清理、原子失败状态和阶段码必须可执行；不依赖额外包、外网或新 CUDA 内核。
 
+代理 contention 的 joint wall 包含代理 GEMM/NCCL 工作，不能再作为纯搬运税加到 T_K。第一版将代理结果作为独立观测/敏感性表，只用 isolated 传输组做上述吞吐情景计算；核心与 CLI 对 proxy 输入均保留数据但停止吞吐预测，列出缺少 transfer-only/incremental 校准的原因。
+
 ## 5. CLI、报告与服务器交接
 
 提供 `python3 -S src/flexmoe/analysis/cli.py` 的标准库入口：validate、replay、analyze、plan、export；GPU 入口通过 `scripts/server/run_offload_analysis.sh` 的 resident/trace/transport 运行现有 pinned Docker，每点 timeout 在容器内。路径为 `runs/offload-analysis/<id>` 与 `docs/results/offload-analysis-<id>`，ID 全新，保留缺失/损坏 summary 的独立 smoke/失败记录。只对生成的该结果命名空间豁免同 SHA 序列的 dirty check，其他源码改动仍阻止执行。
