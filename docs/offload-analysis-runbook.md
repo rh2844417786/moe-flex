@@ -33,6 +33,8 @@ python3 -S src/flexmoe/analysis/cli.py plan \
 
 `plan` 仅写可检查的 JSON 命令清单（argv 和 shell），不执行。首阶段为默认 utilization 0.90/native 的 short=(1024,128)、generation=(1024,2048)、medium=(4096,512)，各并发 16/32/64/128/256/512，共 18 点。逐阶段阅读结果，选少量点进入采样，不启动比例×缓存×负载×模式的全笛卡尔积。`--include-low-budget` 加 0.60 诊断；`--include-long` 加须先检查的 synthetic 16K/32K 点。`--model-path`、`--dataset-path`、`--dataset-manifest` 和 seed、warmup、repetition、超时、调度预算均实际传入；自定义数据仍须通过 manifest 校验。
 
+计划中的 `--model-path`、`--timeout-s`、`--warmups`、`--repetitions`、`--safety-reserve-bytes` 同样传入 transport 阶段；模型路径仅用于该阶段 preflight。计划默认 warmups=1、repetitions=3，所有适用阶段共用，trace 仍固定 repetitions=1。直接运行 transport 可显式选择其他 warmup/repetition 值（下例为 2/5），不受已生成计划影响。
+
 一个正常预算原生点：
 
 ```bash
@@ -88,6 +90,8 @@ bash scripts/server/run_offload_analysis.sh transport --run-id sep08a-proxy \
 ```
 
 `contiguous` 假设可用连续/预打包来源，不包含任意专家子集的额外 packing 或 overfetch。`fragmented` 计每专家 launch；`gather` 包含已测 CPU 准备，只支持 iterations=1。公开 affinity hash 或 unavailable；当前 NUMA/PCIe 拓扑 unavailable，当前 CPU gather 不代表最优实现。
+
+wrapper 的 `--timeout-s` 同时设置容器内外层命令超时和 transport producer 的 NCCL/owned-worker deadline。两者使用同一个选定秒数；容器命令的计时也包含初始化，可能先到期。native/trace 没有传输 producer 的内部 timeout 参数。
 
 代理模式单独保存 copy-only、compute-only、joint wall 及组件。joint wall 已含 GEMM/NCCL，不能再作为额外 copy 税加到 K 时间。核心与 CLI 都返回 `incremental-transfer-calibration`，保留观测、禁止吞吐预测。失败/被杀 worker 每次已完成观测原子 checkpoint；总文件保持 failed、不将部分行冒充完整四 rank 数据。各 mode/contention/完整 transport contract 分组，不跨策略平均。
 
@@ -154,5 +158,7 @@ python3 -S src/flexmoe/analysis/cli.py export \
 ```
 
 GPU wrapper 已为每点自动产生独立公开 report；手动重复导出须用新目录。`report.json` 为固定诊断根+白名单 records，`report.csv` 为逐字段 metric/value，`report.md` 为中文说明、覆盖/成本/缺证据表。bytes 与 GB 均按十进制（1 GB=1,000,000,000 bytes）。嵌套字符串只接受固定枚举、hash、受限版本号；不上传原始 prompt/token IDs/logits/UUID/路径/命令/大 trace。公开 run ID 用 hash；未识别原因记计数，详细异常只在本地。
+
+公开回放保留 `per_layer_totals`、固定四类 phase 的 `per_phase_totals`、五字段 `reuse_gap_summary`、经校验的 `calibration_input_hashes`，以及从 resident_experts 推导的 `resident_count_by_layer`/`resident_count_total`（不公开专家 ID）。传输报告保留逐 shape/mode/repetition 的 aggregates、`cpu_affinity_sha256`（不可得为 null）、拓扑 unavailable 状态；合同保留字面 TP4/BF16。回放的部分窗口、未建模分块、未来参考等已知 caveat 枚举在三个公开格式中完整保留。
 
 **只提交导出器生成并复核的 `report.json/report.csv/report.md`**，不要 `git add runs`，不要上传原始 plan/replay/analyze、日志或 trace；即使手动把它们写到 docs/results，也不属于公开白名单。同 SHA 序列完成后，按明确文件路径提交结果并 push `repro/fluxmoe`，报告执行 SHA 与结果提交 SHA。只有后续真实同资源卸载的 correctness、实际搬运、吞吐/TTFT/错误/OOM 对照才可证明部署收益。

@@ -448,3 +448,32 @@ def test_unsupported_system_python_has_explicit_version_error():
     )
     assert result.returncode != 0
     assert "Python >=3.10" in result.stderr and "Traceback" not in result.stderr
+
+
+def test_plan_custom_settings_reach_every_gpu_phase_and_shell_argv(tmp_path):
+    import shlex
+
+    output = tmp_path / "plan.json"
+    settings = {
+        "--model-path": "/mnt/public_data/custom model",
+        "--timeout-s": "999",
+        "--warmups": "7",
+        "--repetitions": "9",
+        "--safety-reserve-bytes": "3000000000",
+    }
+    flags = [part for pair in settings.items() for part in pair]
+    result = invoke("plan", "--output", output, "--include-long", *flags)
+    assert result.returncode == 0, result.stderr
+    checked_modes = set()
+    for phase in json.loads(output.read_text())["phases"]:
+        for command in phase["commands"]:
+            argv = command["argv"]
+            assert shlex.split(command["shell"]) == argv
+            if argv[0] != "bash":
+                continue
+            checked_modes.add(argv[2])
+            for flag, expected in settings.items():
+                if argv[2] == "trace" and flag == "--repetitions":
+                    expected = "1"
+                assert argv[argv.index(flag) + 1] == expected, (phase["phase"], flag)
+    assert checked_modes == {"resident", "trace", "transport"}

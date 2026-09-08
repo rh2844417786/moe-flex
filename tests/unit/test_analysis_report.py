@@ -334,3 +334,175 @@ def test_trace_summary_reports_capture_incomplete_despite_completed_generation()
     assert result["status"] == "incomplete"
     assert result["generation_status"] == "complete"
     assert result["capture_status"] == "incomplete"
+
+
+@pytest.mark.parametrize("mode", ["transport", "resident", "trace"])
+def test_actual_wrapper_runner_argv_propagates_transport_deadline(tmp_path, mode):
+    runner = tmp_path / "scripts/server/run_container.sh"
+    runner.parent.mkdir(parents=True)
+    runner.write_text('#!/bin/bash\nprintf "%s\\n" "$@"\n')
+    script = ROOT / "scripts/server/run_offload_analysis.sh"
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            (
+                'source "$1"; analysis_root="$2"; analysis_run="$2/runs/offload-analysis/fresh"; '
+                'analysis_mode="$3"; analysis_parse_gpu_args --run-id fresh --timeout-s 999 '
+                '--model-path "/mnt/public_data/custom model" --warmups 7; analysis_run_gpu'
+            ),
+            "test",
+            str(script),
+            str(tmp_path),
+            mode,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    argv = result.stdout.splitlines()
+    assert argv[argv.index("--kill-after=30") + 1] == "999"
+    producer = argv[argv.index("python3") + 1 :]
+    assert producer[0] == "-m"
+    if mode == "transport":
+        assert producer[1] == "flexmoe.bench.transfer_microbench"
+        assert producer[producer.index("--timeout-s") + 1] == "999"
+        assert "--model-path" not in producer
+    else:
+        assert producer[1] == "flexmoe.bench.analysis_runner"
+        assert "--timeout-s" not in producer
+    assert producer[producer.index("--warmups") + 1] == "7"
+    assert not (tmp_path / "runs/offload-analysis/fresh").exists()
+
+
+def test_public_export_retains_replay_transport_provenance_without_private_payloads(
+    tmp_path,
+):
+    from dataclasses import replace
+
+    from test_analysis_cli import transport_artifact
+    from test_analysis_cost import trace
+
+    from flexmoe.analysis.replay import replay_trace
+    from flexmoe.analysis.schema import ReplayConfig
+    from flexmoe.bench.transfer_microbench import aggregate_rows
+
+    source = tmp_path / "source"
+    source.mkdir()
+    demand = replace(
+        trace(0, event_rows=((5, 6), (5,))), full_workload=False, generated_tokens=None
+    )
+    replay = replay_trace(
+        demand, ReplayConfig(((0, 1, 2, 3, 4),), 0, 1, "future")
+    ).to_dict()
+    phases, reuse = replay["per_phase_totals"], replay["reuse_gap_summary"]
+    assert isinstance(phases, dict) and isinstance(reuse, dict)
+    phases["SECRET-PRIVATE-PHASE"] = {"demands": 987}
+    reuse["private"] = "/private/SECRET"
+    save(
+        source / "replay.json",
+        diagnostic_artifact(
+            "replay-suite",
+            {"replays": [replay], "calibration_input_hashes": ["c" * 64] * 4},
+        ),
+    )
+    raw = transport_artifact(samples())
+    raw["aggregates"] = aggregate_rows(raw["samples"])
+    raw["worker_metadata"] = [
+        {
+            "rank": 0,
+            "cpu_affinity_sha256": "e" * 64,
+            "topology_status": "NUMA/PCIe-unavailable",
+            "uuid": "GPU-SECRET",
+            "cpu_affinity": [99999],
+        },
+        {
+            "rank": 1,
+            "cpu_affinity_sha256": None,
+            "topology_status": "NUMA/PCIe-unavailable",
+        },
+    ]
+    save(source / "samples.json", raw)
+    save(source / "summary.json", native())
+    output = tmp_path / "public"
+    result = invoke("export", "--source", source, "--output", output)
+    assert result.returncode == 0, result.stderr
+    records = {
+        r["artifact_kind"]: r
+        for r in json.loads((output / "report.json").read_text())["records"]
+    }
+    public_replay = records["replay-suite"]["replays"][0]
+    assert public_replay["config"]["resident_count_by_layer"] == [5]
+    assert public_replay["config"]["resident_count_total"] == 5
+    assert public_replay["per_layer_totals"][0]["loaded_bytes"] == 300
+    assert public_replay["per_phase_totals"]["decode"]["demands"] == 3
+    assert public_replay["reuse_gap_summary"]["reuse_count"] == 1
+    assert records["replay-suite"]["calibration_input_hashes"] == ["c" * 64] * 4
+    assert set(public_replay["assumptions"]) == {
+        "one-load-per-unique-layer-expert-per-event",
+        "event-start-hit-classification",
+        "persistent-global-cache",
+        "partial-window-not-full-workload",
+        "staging-overflow-requires-unmodelled-chunking",
+        "ideal-future-reference-not-deployed",
+        "not-a-strict-all-system-optimum",
+    }
+    public_transport = records["transfer-samples"]
+    assert public_transport["aggregates"][0]["per_rank_payload_bytes"] == 100
+    assert public_transport["aggregates"][0]["bottleneck_bytes_per_s"] == 1000
+    assert public_transport["worker_metadata"][0]["cpu_affinity_sha256"] == "e" * 64
+    assert public_transport["worker_metadata"][1]["cpu_affinity_sha256"] is None
+    assert records["native-summary"]["contract"]["tensor_parallel_size"] == 4
+    assert records["native-summary"]["contract"]["dtype"] == "bfloat16"
+    for name in ("report.json", "report.csv", "report.md"):
+        text = (output / name).read_text()
+        for field in (
+            "resident_count_by_layer",
+            "resident_count_total",
+            "per_layer_totals",
+            "per_phase_totals",
+            "reuse_gap_summary",
+            "calibration_input_hashes",
+            "aggregates",
+            "cpu_affinity_sha256",
+            "tensor_parallel_size",
+            "bfloat16",
+        ):
+            assert field in text, (name, field)
+        for private in (
+            "SECRET",
+            "/private",
+            "resident_experts",
+            "event_load_counts",
+            "event_load_bytes",
+            "final_cache",
+        ):
+            assert private not in text, (name, private)
+
+
+def test_specialized_public_summaries_reject_untyped_values_and_private_keys():
+    from flexmoe.analysis.report import public_fields
+
+    raw = {
+        "calibration_input_hashes": ["c" * 64, "/private/SECRET"],
+        "per_phase_totals": {
+            "decode": {"demands": True, "loaded_bytes": 100},
+            "SECRET": {"demands": 7},
+        },
+        "reuse_gap_summary": {
+            "reuse_count": False,
+            "mean_event_gap": float("nan"),
+            "private": "SECRET",
+        },
+        "cpu_affinity_sha256": "GPU-SECRET",
+        "dtype": "/private/SECRET",
+        "tensor_parallel_size": True,
+    }
+    public = public_fields(raw)
+    assert public["calibration_input_hashes"] == ["c" * 64]
+    assert public["per_phase_totals"] == {"decode": {"loaded_bytes": 100}}
+    assert public["reuse_gap_summary"] == {}
+    assert "cpu_affinity_sha256" not in public
+    assert "tensor_parallel_size" not in public
+    assert "SECRET" not in json.dumps(public)

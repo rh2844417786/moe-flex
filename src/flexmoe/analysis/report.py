@@ -94,6 +94,13 @@ _ENUMS = frozenset(
         "trace-utilization-differs",
         "median-measured-wall-s-per-exact-chunk",
         "largest-first-exact-decomposition-with-backtracking",
+        "one-load-per-unique-layer-expert-per-event",
+        "event-start-hit-classification",
+        "persistent-global-cache",
+        "partial-window-not-full-workload",
+        "staging-overflow-requires-unmodelled-chunking",
+        "ideal-future-reference-not-deployed",
+        "not-a-strict-all-system-optimum",
         "NUMA/PCIe-unavailable",
         "coordinator",
         "launcher",
@@ -162,6 +169,7 @@ _NUMBERS = frozenset(
         "staging_overflow_events",
         "experts_per_batch",
         "payload_bytes",
+        "per_rank_payload_bytes",
         "wall_s",
         "copy_s",
         "gather_s",
@@ -236,6 +244,7 @@ _OBJECTS = frozenset(
         "smoke",
         "repetitions",
         "measurements",
+        "aggregates",
         "samples",
         "partial_worker_artifacts",
         "worker_metadata",
@@ -282,10 +291,86 @@ def _number(value: Any) -> bool:
     return type(value) in (int, float) and math.isfinite(value)
 
 
+def _counter_summary(raw: Mapping[str, Any]) -> dict[str, int]:
+    """Project the five bounded replay counters; phase names are handled separately."""
+    return {
+        key: value
+        for key, value in raw.items()
+        if key
+        in {"demands", "resident_hits", "cache_hits", "loaded_experts", "loaded_bytes"}
+        and type(value) is int
+        and value >= 0
+    }
+
+
+def _reuse_summary(raw: Mapping[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key in ("observations", "reuse_count", "min_event_gap", "max_event_gap"):
+        value = raw.get(key)
+        if type(value) is int and value >= 0:
+            result[key] = value
+        elif key in {"min_event_gap", "max_event_gap"} and key in raw and value is None:
+            result[key] = None
+    mean = raw.get("mean_event_gap")
+    if "mean_event_gap" in raw and (mean is None or _number(mean) and mean >= 0):
+        result["mean_event_gap"] = mean
+    return result
+
+
+def _resident_counts(value: Any) -> list[int] | None:
+    if not isinstance(value, (list, tuple)) or not value:
+        return None
+    counts = []
+    for row in value:
+        if (
+            not isinstance(row, (list, tuple))
+            or any(type(expert) is not int or expert < 0 for expert in row)
+            or len(set(row)) != len(row)
+        ):
+            return None
+        counts.append(len(row))
+    return counts
+
+
 def public_fields(raw: Mapping[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in raw.items():
-        if key in {
+        if key == "per_layer_totals" and isinstance(value, (list, tuple)):
+            result[key] = [
+                _counter_summary(row) for row in value if isinstance(row, Mapping)
+            ]
+        elif key == "per_phase_totals" and isinstance(value, Mapping):
+            result[key] = {
+                phase: _counter_summary(row)
+                for phase, row in value.items()
+                if phase in {"prefill", "decode", "mixed", "unknown"}
+                and isinstance(row, Mapping)
+            }
+        elif key == "reuse_gap_summary" and isinstance(value, Mapping):
+            result[key] = _reuse_summary(value)
+        elif key == "resident_experts":
+            counts = _resident_counts(value)
+            if counts is not None:
+                result["resident_count_by_layer"] = counts
+                result["resident_count_total"] = sum(counts)
+        elif key == "calibration_input_hashes" and isinstance(value, (list, tuple)):
+            result[key] = [
+                hash_value
+                for hash_value in value
+                if isinstance(hash_value, str)
+                and re.fullmatch(r"[a-f0-9]{64}", hash_value)
+            ]
+        elif (
+            key == "tensor_parallel_size"
+            and type(value) is int
+            and value == 4
+            or key == "dtype"
+            and value == "bfloat16"
+        ):
+            result[key] = value
+        elif key == "cpu_affinity_sha256" and value is None:
+            result[key] = None
+        elif key in {
             "model_identity_sha256",
             "model_config_sha256",
             "input_sha256",
@@ -294,6 +379,7 @@ def public_fields(raw: Mapping[str, Any]) -> dict[str, Any]:
             "engine_policy_sha256",
             "hardware_sha256",
             "benchmark_policy_sha256",
+            "cpu_affinity_sha256",
             "commit",
         } and isinstance(value, str):
             if re.fullmatch(

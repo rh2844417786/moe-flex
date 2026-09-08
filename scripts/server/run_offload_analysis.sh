@@ -65,6 +65,19 @@ analysis_parse_gpu_args() {
   done
 }
 
+analysis_run_gpu() {
+  local analysis_command=()
+  if [[ "${analysis_mode}" == "transport" ]]; then
+    analysis_command=(python3 -m flexmoe.bench.transfer_microbench --timeout-s "${analysis_timeout}")
+  else
+    local runner_engine="${analysis_engine}"
+    if [[ "${analysis_mode}" == "trace" ]]; then runner_engine=trace; fi
+    analysis_command=(python3 -m flexmoe.bench.analysis_runner --mode "${runner_engine}")
+  fi
+  analysis_container "${analysis_root}" "${analysis_timeout}" "${analysis_command[@]}" \
+    --project-root "${analysis_root}" --run-dir "${analysis_run}" "${analysis_args[@]}"
+}
+
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then return 0; fi
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   echo "Usage: GPU_IDS=0,1,2,3 bash scripts/server/run_offload_analysis.sh resident|trace|transport --run-id ID [--timeout-s N] [runner flags]"
@@ -125,14 +138,7 @@ analysis_container "${analysis_root}" "${analysis_timeout}" \
   --output "${analysis_logs}/preflight.json" \
   >"${analysis_logs}/preflight.stdout.log" 2>"${analysis_logs}/preflight.stderr.log" || analysis_code=$?
 if [[ "${analysis_code}" -eq 0 ]]; then
-  if [[ "${analysis_mode}" == "transport" ]]; then
-    analysis_command=(python3 -m flexmoe.bench.transfer_microbench)
-  else
-    if [[ "${analysis_mode}" == "trace" ]]; then analysis_engine=trace; fi
-    analysis_command=(python3 -m flexmoe.bench.analysis_runner --mode "${analysis_engine}")
-  fi
-  analysis_container "${analysis_root}" "${analysis_timeout}" "${analysis_command[@]}" \
-    --project-root "${analysis_root}" --run-dir "${analysis_run}" "${analysis_args[@]}" \
+  analysis_run_gpu \
     >"${analysis_logs}/runner.stdout.log" 2>"${analysis_logs}/runner.stderr.log" || analysis_code=$?
 fi
 if [[ "${analysis_code}" -ne 0 ]]; then
