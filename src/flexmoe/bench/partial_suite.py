@@ -193,6 +193,7 @@ def _public_repetition(row: Mapping[str, Any]) -> dict[str, Any]:
 def public_run(raw: Mapping[str, Any]) -> dict[str, Any]:
     """Typed allowlist, including nested values. Never copy arbitrary objects."""
     if raw.get("artifact_kind") in {
+        "decode-run", "decode-profile", "decode-repetition", "decode-smoke",
         "native-summary", "analysis-smoke", "analysis-repetition", "demand-trace",
         "transfer-samples", "transfer-worker", "replay-suite", "analysis-suite",
         "feasibility-analysis", "offload-analysis-report", "offload-analysis-plan",
@@ -404,6 +405,7 @@ def analyze_triplet(
     }
     runs = (resident, fixed, auto)
     if any(row.get("artifact_kind") in {
+        "decode-run", "decode-profile", "decode-repetition", "decode-smoke",
         "native-summary", "analysis-smoke", "analysis-repetition", "demand-trace",
         "transfer-samples", "transfer-worker", "replay-suite", "analysis-suite",
         "feasibility-analysis", "offload-analysis-report", "offload-analysis-plan",

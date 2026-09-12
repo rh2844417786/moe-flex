@@ -111,3 +111,8 @@ probe、greedy token、bit-exact 权重以及非零映射/HtoD/解压证据齐�
 [中文运行手册](docs/offload-analysis-runbook.md) 和
 [服务器 Codex 交接](docs/server-codex-offload-analysis-prompt.md)。
 这些分析输出不构成真实卸载或部署加速证据。
+
+实际 decode batch、路由选择次数、真实卸载缺失与显式 KV 墙钟对照使用独立入口
+`python3 -S src/flexmoe/analysis/decode_suite.py --help`，详见
+[解码机制运行手册](docs/decode-mechanism-runbook.md) 和
+[服务器执行说明](docs/server-codex-decode-mechanism-prompt.md)。
