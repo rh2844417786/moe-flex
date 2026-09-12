@@ -1013,6 +1013,12 @@ def require_active_registry() -> FluxMoERegistry:
 class FluxMoEWorkerExtension:
     """Named vLLM worker RPCs that do not require callable serialization."""
 
+    def fluxmoe_decode_mechanism(self, action: str, **limits: Any) -> dict[str, Any]:
+        from flexmoe.vllm.decode_trace import decode_rpc
+
+        return decode_rpc(action, int(getattr(self, "rank", 0)),
+                          getattr(self, "model_runner", None), **limits)
+
     def fluxmoe_analysis_device(self) -> dict[str, Any]:
         from flexmoe.vllm.analysis_trace import device_record
 
@@ -1296,6 +1302,11 @@ def before_forward(
 
 
 def record_calibration(layer_name: str, topk_ids: torch.Tensor) -> None:
+    if os.environ.get("FLUXMOE_DECODE_MECHANISM") == "1":
+        from flexmoe.vllm.decode_trace import record_decode
+
+        record_decode(layer_name, topk_ids)
+        return
     if os.environ.get("FLUXMOE_ANALYSIS_TRACE") == "1":
         from flexmoe.vllm.analysis_trace import record_trace
 

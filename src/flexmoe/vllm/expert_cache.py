@@ -212,6 +212,7 @@ class ExpertCacheRegistry:
             [(layer.w13, layer.w2) for layer in self.host],
             backend=backend,
             load_residents=False,
+            track_load_history=os.environ.get("FLUXMOE_DECODE_MECHANISM") == "1",
         )
         self.names: dict[int, str] = {}
         self.accumulators: dict[int, ExpertLoadAccumulator] = {}
