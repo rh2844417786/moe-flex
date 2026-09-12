@@ -24,6 +24,8 @@
 
 采集单独运行并标instrumented，不当正式throughput。新采集入口与旧布尔occupancy入口隔离，保持旧消费者兼容。GPU固定有界int计数，结束后统一拷回；不新增每层CUDA同步或逐token D2H。
 
+详细histogram/profile使用明确的matched-resident/eager或offload/eager模式；native优化模式只保留Graph-safe轻量实际batch/scheduler统计和正式测速。禁止将native+profile静默降级成eager：该组合必须提示改用matched-resident。这样不会把Graph捕获时绑定的采样槽反复重放并误标为多个步骤，但详细路由分布的适用范围是eager观察，不声称逐位重现Graph运行路由。
+
 ## 2. 真实卸载缺失与时间
 
 复用真实ExpertPool、ExpertBackend和原MoE kernel。新显式mechanism模式记录每层每步resident命中、cache命中、去重miss、实际加载字节/次数、first-load与reload，及eviction/bypass等已知状态。首次/重载以本次engine生命周期（含prefill/warmup）的已加载集合判断，采样开始不将已见专家重置成冷加载。预取就绪状态独立于miss类别；当前无预取明确not-applicable。
