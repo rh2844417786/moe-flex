@@ -376,11 +376,27 @@ class DecodeMechanismBackend(ExpertBackend):
         if any(row.get("active") is not True for row in starts):
             raise RuntimeError("decode observer start worker coverage incomplete")
 
+    def _observations(self, raw: object) -> list[dict[str, Any]]:
+        return [
+            {
+                key: value
+                for key, value in row.items()
+                if key
+                not in (
+                    "activation_rows",
+                    "activation_summaries",
+                    "pool_profile",
+                    "model_step_spans",
+                )
+            }
+            for row in shared.worker_rows(raw, self.config.tensor_parallel_size)
+        ]
+
     def _save_capture(
         self, raw: object, generation_status: str
     ) -> list[dict[str, Any]]:
         assert self.run_dir is not None
-        observations = []
+        observations = self._observations(raw)
         for row in shared.worker_rows(raw, self.config.tensor_parallel_size):
             atomic_gzip(
                 self.run_dir
@@ -398,43 +414,90 @@ class DecodeMechanismBackend(ExpertBackend):
                     },
                 ),
             )
-            observations.append(
-                {
-                    key: value
-                    for key, value in row.items()
-                    if key
-                    not in (
-                        "activation_rows",
-                        "activation_summaries",
-                        "pool_profile",
-                        "model_step_spans",
-                    )
-                }
-            )
         return observations
 
     def measurement_fields(self, engine: Any, workers: int) -> dict[str, Any]:
-        raw = engine.collective_rpc(
-            "fluxmoe_decode_mechanism", kwargs={"action": "stop"}
-        )
-        observations = self._save_capture(raw, "complete")
-        self.capture_active = False
-        assert self.scheduler is not None
-        scheduler = self.scheduler.stop()
-        self.repetition += 1
-        return {
+        # Generate, fixed-output validation and timed synchronization have already
+        # succeeded. Return observer failures so the shared rejected-sample hook
+        # can persist those known numeric fields before propagating an error.
+        result: dict[str, Any] = {
             "generation_status": "complete",
+            "capture_status": "complete",
             "timing_eligible": not self.profile,
-            "worker_observations": observations,
-            "scheduler": scheduler,
-            "memory": shared._memory(engine, workers),
-            "cpu_memory": cpu_memory(),
+            "worker_observations": [],
+            "memory": [],
+            "memory_status": "unavailable",
             "memory_peak_scope": "measured-generate-after-synchronized-reset",
         }
+        errors = []
+        stage = "capture_stop"
+        try:
+            raw = engine.collective_rpc(
+                "fluxmoe_decode_mechanism", kwargs={"action": "stop"}
+            )
+            self.capture_active = False
+            result["worker_observations"] = self._observations(raw)
+            stage = "capture_save"
+            self._save_capture(raw, "complete")
+        except Exception as error:  # noqa: BLE001 -- reject after numeric sample persistence
+            result["capture_status"] = "failed"
+            errors.append({"stage": stage, "error_type": type(error).__name__})
+        finally:
+            if self.capture_active:
+                # A transport or one-rank validation error may leave other
+                # workers active. Retry stop for restoration only: an inactive
+                # empty response must not replace an earlier useful capture.
+                try:
+                    engine.collective_rpc(
+                        "fluxmoe_decode_mechanism", kwargs={"action": "stop"}
+                    )
+                    result["capture_restoration"] = {"status": "complete"}
+                except Exception as error:  # noqa: BLE001 -- original capture error retained
+                    result["capture_restoration"] = {
+                        "status": "failed",
+                        "error_type": type(error).__name__,
+                    }
+                self.capture_active = False
+
+        for stage, observe in (
+            ("scheduler", self.scheduler.stop if self.scheduler is not None else None),
+            ("memory", lambda: shared._memory(engine, workers)),
+            ("cpu_memory", cpu_memory),
+        ):
+            try:
+                if observe is None:
+                    raise RuntimeError("scheduler observer unavailable")
+                result[stage] = observe()
+                if stage == "memory":
+                    result["memory_status"] = "measured"
+            except Exception as error:  # noqa: BLE001 -- preserve generation's numeric evidence
+                errors.append({"stage": stage, "error_type": type(error).__name__})
+                if stage != "memory":
+                    result[stage] = {
+                        "status": "unavailable",
+                        "error_type": type(error).__name__,
+                    }
+                if stage == "scheduler" and self.scheduler is not None:
+                    # Local assignment is the reversible decoration boundary.
+                    self.scheduler.owner.stat_logger = self.scheduler.original
+                    self.scheduler.active = False
+        result["observer_finalization"] = {
+            "status": "failed" if errors else "complete",
+            "errors": errors,
+        }
+        self.summary["generation_status"] = "complete"
+        self.summary["capture_status"] = result["capture_status"]
+        self.summary["observer_finalization"] = result["observer_finalization"]
+        self.repetition += 1
+        return result
 
     def validate_measurement(
         self, result: dict[str, Any], config: shared.PartialRunConfig
     ) -> None:
+        if result.get("observer_finalization", {}).get("status") == "failed":
+            raise RuntimeError(
+                "decode observer finalization failed; completed generation retained"
+            )
         self._check_memory(result["memory"])
         actual = self.validate_kv(result["memory"])
         if actual != self.summary["actual_kv"]:

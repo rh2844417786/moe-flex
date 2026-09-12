@@ -288,6 +288,103 @@ def test_post_measurement_physical_drop_preserves_numeric_rejected_sample(
     assert failed["artifact_kind"] == "decode-repetition"
 
 
+@pytest.mark.parametrize("failure", ["stop", "activation", "save", "memory"])
+def test_completed_generation_survives_observer_finalization_failure(
+    tmp_path, monkeypatch, failure
+):
+    from flexmoe.bench.partial_runner import run_benchmark
+
+    class ObserverFailure(DecodeEngine):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.original_logger = self.llm_engine.stat_logger
+            self.stops = 0
+
+        def collective_rpc(self, method, kwargs=None):
+            if method == "fluxmoe_decode_mechanism" and kwargs["action"] == "stop":
+                self.stops += 1
+                if failure == "stop" and self.stops == 1:
+                    raise RuntimeError("stop transport failure before workers stop")
+                if failure == "activation" and self.stops == 1:
+                    # Actual collector rejects impossible activation counts after
+                    # restoring its prepared-input wrapper.
+                    self.captures[0].buffer[0, 0, 0] = 99
+            if (
+                method == "fluxmoe_worker_memory_stats"
+                and self.calls == 3
+                and failure == "memory"
+            ):
+                raise RuntimeError("memory boundary unavailable")
+            return super().collective_rpc(method, kwargs)
+
+    real_save = module().atomic_gzip
+
+    def save(path, data):
+        # Keep rank 0's successful file: a retry must never overwrite it with
+        # an empty inactive collector after later-rank serialization fails.
+        if failure == "save" and path.name.endswith("rank-1.json.gz"):
+            raise OSError("profile write failed")
+        return real_save(path, data)
+
+    monkeypatch.setattr(module(), "atomic_gzip", save)
+    cfg = config(tmp_path)
+    engines = install(monkeypatch, ObserverFailure)
+    run = tmp_path / f"failed-{failure}"
+    backend = module().DecodeMechanismBackend(
+        cfg,
+        mode="matched-resident",
+        profile=True,
+        capture_steps=2,
+        min_capture_steps=1,
+        safety_reserve_bytes=100,
+    )
+    with pytest.raises((RuntimeError, ValueError, OSError)):
+        run_benchmark(cfg, project_root=Path.cwd(), run_dir=run, backend=backend)
+    summary = json.loads((run / "summary.json").read_text())
+    assert (run / "failed-rep-000.json").exists()
+    failed = json.loads((run / "failed-rep-000.json").read_text())
+    assert summary["failed_measurement"] == failed
+    assert failed["measurement_status"] == "rejected"
+    assert failed["generation_status"] == summary["generation_status"] == "complete"
+    assert failed["generated_tokens"] == 15 and failed["request_count"] == 5
+    assert failed["elapsed_s"] > 0
+    assert len(failed["output_sha256"]) == 64
+    assert failed["output_tokens_per_second"] == 15 / failed["elapsed_s"]
+    assert failed["observer_finalization"]["status"] == "failed"
+    expected_stage = {
+        "stop": "capture_stop",
+        "activation": "capture_stop",
+        "save": "capture_save",
+        "memory": "memory",
+    }[failure]
+    error = failed["observer_finalization"]["errors"][0]
+    assert error["stage"] == expected_stage
+    assert (
+        error["error_type"]
+        == {
+            "stop": "RuntimeError",
+            "activation": "ValueError",
+            "save": "OSError",
+            "memory": "RuntimeError",
+        }[failure]
+    )
+    assert (run / "smoke.json").is_file()
+    assert summary["repetitions_completed"] == 0
+    assert engines[0].calls == 3
+    assert engines[0].llm_engine.stat_logger is engines[0].original_logger
+    assert all(not capture.active for capture in engines[0].captures)
+    assert not backend.capture_active
+    if failure == "save":
+        assert failed["worker_observations"][0]["captured_steps"] == 2
+        with gzip.open(run / "decode-rep-000-rank-0.json.gz", "rt") as stream:
+            kept = json.load(stream)
+        assert kept["generation_status"] == "complete"
+        assert len(kept["observation"]["activation_rows"]) == 4
+    if failure == "memory":
+        assert failed["capture_status"] == "complete"
+        assert failed["memory_status"] == "unavailable"
+
+
 def test_cli_passes_explicit_new_parameters_to_shared_runner(tmp_path, monkeypatch):
     got = []
     monkeypatch.setattr(
