@@ -1,6 +1,7 @@
 import gzip
 import json
 
+import pytest
 from test_decode_suite import evidence
 
 from flexmoe.analysis import decode_report as report
@@ -226,6 +227,8 @@ def test_export_comparison_retains_measured_ratios_and_launcher_failure(tmp_path
     assert saved["comparison"]["kv_recovery_s"] == 3
     assert "matched_net_ratio" in (out / "report.csv").read_text()
     assert 'data-x="1400"' in (out / "kv-throughput.svg").read_text()
+    for arm in ("A-matched-resident", "B-offload", "C-offload"):
+        assert f'data-arm="{arm}"' in (out / "kv-throughput.svg").read_text()
 
 
 def test_report_exposes_actual_pool_memory_with_no_inferred_rounding(tmp_path):
@@ -240,3 +243,47 @@ def test_report_exposes_actual_pool_memory_with_no_inferred_rounding(tmp_path):
     result = report.summarize_directory(tmp_path)
     assert result["expert_cache_stats"][0]["resident_slots"] == 23
     assert result["expert_cache_stats"][0]["gpu_resident_bytes"] == 4416
+
+
+@pytest.mark.parametrize(
+    "damage,category",
+    [
+        ("truncated", "truncated-compression"),
+        ("header", "invalid-compression"),
+        ("deflate", "invalid-compression"),
+    ],
+)
+def test_damaged_capture_export_preserves_siblings_without_raw_error(
+    tmp_path, damage, category
+):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    write(raw / "summary.json", evidence(profile=True))
+    write(raw / "smoke.json", evidence()["smoke"])
+    failed = evidence()["repetitions"][0]
+    failed["measurement_status"] = "rejected"
+    write(raw / "failed-rep-000.json", failed)
+    write(raw / "launcher.json", {"status": "failed", "exit_code": 124})
+    write(raw / "decode-rep-000-rank-0.json.gz", capture())
+    encoded = gzip.compress(b'{"private":"PRIVATE_CAPTURE_ERROR"}')
+    damaged = (
+        encoded[:-5]
+        if damage == "truncated"
+        else b"PRIVATE_CAPTURE_ERROR"
+        if damage == "header"
+        else encoded[:10] + b"\xff" + encoded[11:]
+    )
+    (raw / "decode-rep-000-rank-1.json.gz").write_bytes(damaged)
+    out = tmp_path / "out"
+    report.export_report(raw, out)
+    result = json.loads((out / "report.json").read_text())
+    assert result["smoke"]["generated_tokens"] == 1
+    assert result["launcher"]["exit_code"] == 124
+    assert result["repetitions"][0]["elapsed_s"] == 10
+    assert result["repetitions"][0]["measurement_status"] == "rejected"
+    assert (
+        result["captures"][0]["activation_summaries"][0]["per_layer"][0]["token_count"]
+        == 128
+    )
+    assert result["artifact_errors"] == [{"kind": "capture", "reason": category}]
+    assert all("PRIVATE_CAPTURE_ERROR" not in p.read_text() for p in out.iterdir())

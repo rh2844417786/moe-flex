@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import csv
+import gzip
 import json
+import zlib
 from collections.abc import Mapping, Sequence
 from html import escape
 from pathlib import Path
@@ -359,6 +361,10 @@ def _load(path: Path) -> tuple[dict[str, Any], str | None]:
         return read_artifact(path), None
     except FileNotFoundError:
         return {}, "missing-artifact"
+    except EOFError:
+        return {}, "truncated-compression"
+    except (gzip.BadGzipFile, zlib.error):
+        return {}, "invalid-compression"
     except (json.JSONDecodeError, UnicodeError):
         return {}, "malformed-json"
     except OSError:
@@ -515,17 +521,33 @@ def summarize_directory(source: Path) -> dict[str, Any]:
 
 
 def _svg(
-    path: Path, points: Sequence[tuple[float, float]], xlabel: str, ylabel: str
+    path: Path,
+    points: Sequence[tuple[float, float]],
+    xlabel: str,
+    ylabel: str,
+    *,
+    labels: Sequence[str] = (),
 ) -> None:
     if not points:
         return
     xmax, ymax = max(x for x, _ in points), max(y for _, y in points)
     dots = []
-    for x, y in points:
+    colors = {
+        "A-matched-resident": "#2455a4",
+        "B-offload": "#b64b38",
+        "C-offload": "#287a4d",
+    }
+    for index, (x, y) in enumerate(points):
         px, py = 70 + 480 * x / (xmax or 1), 300 - 240 * y / (ymax or 1)
+        label = labels[index] if index < len(labels) and labels[index] in colors else ""
+        color = colors.get(label, "#2455a4")
         dots.append(
-            f'<circle cx="{px:.3f}" cy="{py:.3f}" r="4" data-x="{x:g}" data-y="{y:g}" fill="#2455a4"><title>{x:g}, {y:g}</title></circle>'
+            f'<circle cx="{px:.3f}" cy="{py:.3f}" r="4" data-x="{x:g}" data-y="{y:g}" data-arm="{label}" fill="{color}"><title>{label}: {x:g}, {y:g}</title></circle>'
         )
+        if label:
+            dots.append(
+                f'<text x="{px + 7:.3f}" y="{py:.3f}" fill="{color}">{label[0]}</text>'
+            )
     path.write_text(
         '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">'
         '<rect width="640" height="360" fill="white"/><path d="M70 40V300H580" fill="none" stroke="#333"/>'
@@ -643,6 +665,10 @@ def export_report(
             ],
             "actual allocated KV bytes / rank",
             "measured output tokens / s",
+            labels=[
+                point["arm"]
+                for point in mapping(result.get("comparison")).get("points", [])
+            ],
         )
     if result.get("comparison"):
         comp = result["comparison"]

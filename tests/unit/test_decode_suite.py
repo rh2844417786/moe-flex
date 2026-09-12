@@ -337,6 +337,75 @@ def test_unmatched_native_kv_cannot_be_labeled_engine_mode_tax():
     assert result["engine_mode_tax_status"] == "confounded-kv"
 
 
+@pytest.mark.parametrize("group", ["cache_config", "requested"])
+def test_native_reference_requires_actual_requested_resolved_utilization(group):
+    native = evidence("native", 8)
+    native["engine_policy"].setdefault(group, {})["gpu_memory_utilization"] = 0.6
+    native["contract"]["engine_policy_sha256"] = digest(native["engine_policy"])
+    result = suite.compare_runs(
+        evidence(), evidence("offload", 12), evidence("offload", 9, 1400), native
+    )
+    assert result["status"] == "invalid-comparison"
+    assert "engine-policy" in result["reasons"]
+    assert "native_reference_ratio" not in result
+
+
+@pytest.mark.parametrize(
+    "group,key,value",
+    [
+        ("scheduler_config", "max_num_partial_prefills", 99),
+        ("cache_config", "block_size", 32),
+        ("requested", "disable_log_stats", True),
+    ],
+)
+def test_native_policy_confound_keeps_reference_without_engine_only_tax(
+    group, key, value
+):
+    native = evidence("native", 8)
+    native["engine_policy"].setdefault(group, {})[key] = value
+    native["contract"]["engine_policy_sha256"] = digest(native["engine_policy"])
+    result = suite.compare_runs(
+        evidence(), evidence("offload", 12), evidence("offload", 9, 1400), native
+    )
+    assert result["status"] == "measured"
+    assert result["native_reference_ratio"] == pytest.approx(8 / 9)
+    assert result["native_to_matched_elapsed_delta_s"] == 2
+    assert result["engine_mode_tax_status"] == "confounded-policy"
+    assert "engine_mode_tax_s" not in result
+
+
+def test_recorded_native_eager_compilation_differences_remain_supported():
+    rows = [
+        evidence(),
+        evidence("offload", 12),
+        evidence("offload", 9, 1400),
+        evidence("native", 8),
+    ]
+    for row in rows:
+        native = row["mode"] == "native"
+        policy = row["engine_policy"]
+        policy["compilation_config"] = {
+            "level": 3 if native else 0,
+            "cudagraph_mode": "FULL_AND_PIECEWISE" if native else "NONE",
+            "custom_ops": "['all']",
+        }
+        policy["requested"] = {
+            "gpu_memory_utilization": 0.9,
+            "enforce_eager": not native,
+            "disable_custom_all_reduce": not native,
+            "disable_log_stats": False,
+        }
+        if not native:
+            policy["requested"]["compilation_config"] = {
+                "level": 0,
+                "custom_ops": ["all"],
+            }
+        row["contract"]["engine_policy_sha256"] = digest(policy)
+    result = suite.compare_runs(*rows)
+    assert result["status"] == "measured"
+    assert result["engine_mode_tax_s"] == 2
+
+
 def test_plan_is_finite_executable_and_requires_actual_kv_input():
     p = suite.build_plan(
         stage="baseline",

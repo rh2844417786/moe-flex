@@ -266,6 +266,8 @@ def validate_run(raw: Mapping[str, Any]) -> dict[str, Any]:
     ):
         errors.add("input-uniqueness")
     policy = mapping(raw.get("engine_policy"))
+    requested = mapping(policy.get("requested"))
+    utilization = c.get("gpu_memory_utilization")
     model, parallel, cache, sched = (
         mapping(policy.get(k))
         for k in ("model_config", "parallel_config", "cache_config", "scheduler_config")
@@ -281,6 +283,13 @@ def validate_run(raw: Mapping[str, Any]) -> dict[str, Any]:
         or parallel.get("tensor_parallel_size") != 4
         or parallel.get("pipeline_parallel_size") != 1
         or parallel.get("data_parallel_size") != 1
+        or not number(utilization)
+        or not 0 < utilization <= 1
+        or cache.get("gpu_memory_utilization") != utilization
+        or (
+            "gpu_memory_utilization" in requested
+            and requested["gpu_memory_utilization"] != utilization
+        )
         or cache.get("cpu_offload_gb") != 0
         or cache.get("swap_space_bytes") != 0
         or cache.get("enable_prefix_caching") is not False
@@ -412,6 +421,41 @@ def validate_run(raw: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _policy_without_mode(policy: object) -> dict[str, Any]:
+    """Remove only the recorded knobs changed by AnalysisBackend native/eager."""
+    excluded = {
+        "model_config": {"enforce_eager"},
+        "parallel_config": {"disable_custom_all_reduce"},
+        "compilation_config": {
+            "level",
+            "cudagraph_mode",
+            "use_inductor",
+            "cudagraph_num_of_warmups",
+            "custom_ops",
+        },
+        "requested": {"enforce_eager", "disable_custom_all_reduce"},
+    }
+    result = mapping(policy)
+    for group, fields in excluded.items():
+        if group not in result:
+            continue
+        values = {
+            key: value
+            for key, value in mapping(result[group]).items()
+            if key not in fields
+        }
+        if group == "requested" and values.get("compilation_config") == {
+            "custom_ops": ["all"],
+            "level": 0,
+        }:
+            values.pop("compilation_config")
+        if values:
+            result[group] = values
+        else:
+            result.pop(group)
+    return result
+
+
 def compare_runs(
     a: Mapping[str, Any],
     b: Mapping[str, Any],
@@ -468,6 +512,10 @@ def compare_runs(
     if native is not None and (
         native.get("mode") != "native"
         or mapping(native.get("contract")).get("gpu_memory_utilization") != 0.9
+        or mapping(mapping(native.get("engine_policy")).get("cache_config")).get(
+            "gpu_memory_utilization"
+        )
+        != 0.9
     ):
         errors.add("native-reference-policy")
     if errors:
@@ -498,9 +546,14 @@ def compare_runs(
             mapping(native.get("actual_kv")).get(k) == ak.get(k)
             for k in ("allocated_bytes_per_rank", "num_gpu_blocks")
         ):
-            result.update(
-                engine_mode_tax_s=at - nt, engine_mode_tax_status="same-actual-kv"
-            )
+            if _policy_without_mode(
+                native.get("engine_policy")
+            ) == _policy_without_mode(a.get("engine_policy")):
+                result.update(
+                    engine_mode_tax_s=at - nt, engine_mode_tax_status="same-actual-kv"
+                )
+            else:
+                result["engine_mode_tax_status"] = "confounded-policy"
         else:
             result["engine_mode_tax_status"] = "confounded-kv"
     return result
