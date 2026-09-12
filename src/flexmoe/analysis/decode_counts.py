@@ -28,6 +28,8 @@ def validate_activation_row(
     layer_count = _positive_int(layers, "layers")
     expert_count = _positive_int(experts, "experts")
     selections_per_token = _positive_int(top_k, "top_k")
+    if selections_per_token > expert_count:
+        raise ValueError("top_k cannot exceed experts")
 
     try:
         step_value = row["step"]
@@ -54,6 +56,8 @@ def validate_activation_row(
     if any(type(count) is not int or count < 0 for count in histogram_value):
         raise ValueError("histogram counts must be nonnegative ints")
     histogram = cast(list[int], histogram_value)
+    if any(count > actual_batch for count in histogram):
+        raise ValueError("histogram counts cannot exceed actual_batch")
     expected = actual_batch * selections_per_token
     if sum(histogram) != expected:
         raise ValueError(f"histogram sum must be {expected}")

@@ -68,6 +68,33 @@ def test_validate_activation_row_rejects_malformed_values(
         validate_activation_row(row, layers=2, experts=4, top_k=2)
 
 
+def test_validate_activation_row_rejects_more_selections_than_batch_per_expert(
+) -> None:
+    row = {
+        "step": 0,
+        "layer": 0,
+        "phase": "decode",
+        "actual_batch": 2,
+        "histogram": [4, 0, 0, 0],
+    }
+
+    with pytest.raises(ValueError, match="cannot exceed actual_batch"):
+        validate_activation_row(row, layers=2, experts=4, top_k=2)
+
+
+def test_validate_activation_row_rejects_top_k_greater_than_experts() -> None:
+    row = {
+        "step": 0,
+        "layer": 0,
+        "phase": "decode",
+        "actual_batch": 1,
+        "histogram": [2],
+    }
+
+    with pytest.raises(ValueError, match="top_k cannot exceed experts"):
+        validate_activation_row(row, layers=1, experts=1, top_k=2)
+
+
 def test_summarize_counts_token_expert_edges_and_per_step_coverage() -> None:
     result = summarize_activations(
         activation_rows(),
