@@ -106,6 +106,8 @@ python3 -S src/flexmoe/analysis/decode_suite.py export --source "$DECODE_A" --b 
 
 比较严格要求实际身份、vLLM commit、固定输出、四rank显存、同执行策略、完整三次重复和成功采集。缺失 version 或采集最终化失败时，即使 generation_status=complete，也返回 ineligible；数值 rejected 样本和 smoke 仍保存。`offload_overhead_s` 是实现总开销，不叫纯 miss 时间；native0.90 独立参考。native 与 A 的实际KV不同，则 native→matched 时间差明确带KV混杂，不报告纯 engine mode tax。B/C输出ratio只适用于本工作负载，不证明所有部署收益。
 
+“固定输出”指每请求固定token数量；BF16多请求的整批输出hash在重复间变化只记为 `output_variation=varied` 审计，不抹掉有效测速。原始hash留在本地，公开只保存变化状态和计数，smoke一致性仍严格检查。比较JSON的 `arms` 保留A/B/C及可选native每次重复的四rank实际batch分布、phase/步骤分母，以及独立frontend的running/waiting、KV usage、preemptions和samples/status。`admission_evidence` 单独标B→C批量增加、未观察到增加或不足，以及scheduler/因果解释指标是否齐全；Markdown给出rank0一份逻辑计数的简表。未增batch或指标缺失不会使有效墙钟对照变成零吞吐，也不能把观察到的批量变化解释成全部时间收益的原因。
+
 每次 GPU 包装调用自动保存原始 `runs/decode-mechanism/<id>`、独立 `<id>-launcher` 日志，并导出该点的公开目录。公开白名单只有 `report.json`、`report.csv`、`report.md`，有合格实际数据时另有 `kv-throughput.svg`、`batch-coverage.svg`、`miss-service.svg`。不会为缺失点补零、补假曲线。scheduler KV usage 是block使用比例采样，未换算精确 occupied bytes；mean是样本均值，frontend样本不和worker步骤强制对齐。
 
 原始 prompt/token IDs、UUID、绝对路径、日志和输出哈希不进入公开报告。原始失败结果留在服务器；不要清理 `failed-rep-*`、部分 gzip 或独立 smoke。仅在整组结束后提交真实生成的明确目录：

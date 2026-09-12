@@ -2,7 +2,7 @@ import gzip
 import json
 
 import pytest
-from test_decode_suite import evidence
+from test_decode_suite import admission_run, evidence
 
 from flexmoe.analysis import decode_report as report
 
@@ -287,3 +287,37 @@ def test_damaged_capture_export_preserves_siblings_without_raw_error(
     )
     assert result["artifact_errors"] == [{"kind": "capture", "reason": category}]
     assert all("PRIVATE_CAPTURE_ERROR" not in p.read_text() for p in out.iterdir())
+
+
+def test_comparison_only_export_carries_bc_admission_and_variation_without_hashes(
+    tmp_path,
+):
+    sources = []
+    for arm, row in [
+        ("a", admission_run(evidence(), 2)),
+        ("b", admission_run(evidence("offload", 12), 2, "partial")),
+        ("c", admission_run(evidence("offload", 9, 1400), 4, "partial")),
+    ]:
+        row["repetitions"][1]["output_sha256"] = "8" * 64
+        row["performance_outputs_stable"] = False
+        row["repetitions"][0]["scheduler"]["private"] = "PRIVATE_ADMISSION"
+        row["repetitions"][0]["worker_observations"][0]["private"] = "PRIVATE_ADMISSION"
+        path = tmp_path / arm
+        path.mkdir()
+        write(path / "summary.json", row)
+        sources.append(path)
+    out = tmp_path / "out"
+    report.export_report(sources[0], out, comparisons=sources[1:])
+    saved = json.loads((out / "report.json").read_text())["comparison"]
+    assert saved["status"] == "measured"
+    assert (
+        saved["arms"][1]["repetitions"][0]["scheduler"]["kv_cache_usage"]["samples"]
+        == 7
+    )
+    assert saved["arms"][2]["repetitions"][0]["worker_batch"][0]["decode_steps"] == 256
+    md = (out / "report.md").read_text()
+    assert "observed-increase" in md and "incomplete" in md
+    assert "varied" in md and "| C | 0 |" in md
+    all_text = "".join(path.read_text() for path in out.iterdir())
+    assert "PRIVATE_ADMISSION" not in all_text
+    assert "8" * 64 not in all_text and "output_sha256" not in all_text

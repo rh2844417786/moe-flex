@@ -404,15 +404,28 @@ def validate_run(raw: Mapping[str, Any]) -> dict[str, Any]:
         or smoke.get("request_count") != 1
     ):
         errors.add("smoke-evidence")
-    if (
-        raw.get("performance_outputs_stable") is not True
-        or len({mapping(x).get("output_sha256") for x in reps}) != 1
-    ):
-        errors.add("unstable-output")
+    hashes = [mapping(x).get("output_sha256") for x in reps]
+    valid_hashes = [value for value in hashes if hash_string(value)]
+    unique_outputs = len(set(valid_hashes))
+    output_variation = {
+        "status": "unavailable"
+        if not hashes or len(valid_hashes) != len(hashes)
+        else "stable"
+        if unique_outputs == 1
+        else "varied",
+        "repetitions": len(reps),
+        "valid_output_hashes": len(valid_hashes),
+        "unique_outputs": unique_outputs,
+        "producer_reported_stable": raw.get("performance_outputs_stable")
+        if type(raw.get("performance_outputs_stable")) is bool
+        else None,
+        "scope": "whole-output repeat variation is audit only; fixed counts, valid hashes and smoke remain required",
+    }
     return {
         "status": "eligible" if not errors else "ineligible",
         "timing_eligible": not errors,
         "reasons": sorted(errors),
+        "output_variation": output_variation,
         "eligible_repetitions": len(times) if not errors else 0,
         "elapsed_median_s": median(times) if not errors else None,
         "throughput_median_tokens_s": median([n * output / t for t in times])
@@ -465,6 +478,9 @@ def compare_runs(
     result = diagnostic_artifact("decode-comparison", {"status": "invalid-comparison"})
     rows = [a, b, c] + ([native] if native is not None else [])
     checks = [validate_run(row) for row in rows]
+    from .decode_report import comparison_telemetry
+
+    result.update(comparison_telemetry(rows, checks))
     if any(not x["timing_eligible"] for x in checks):
         return {**result, "reasons": sorted({r for x in checks for r in x["reasons"]})}
     ac, bc, cc = (mapping(row.get("contract")) for row in (a, b, c))

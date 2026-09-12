@@ -235,6 +235,152 @@ def repetition(raw: object) -> dict[str, Any]:
     return result
 
 
+def _worker_batch(obs: Mapping[str, Any], minimum: int) -> dict[str, Any]:
+    counts = mapping(obs.get("decode_batch_step_counts"))
+    steps = sum(counts.values())
+    return {
+        **numbers(obs, ("rank",), ints=True),
+        "status": "unavailable"
+        if not steps
+        else "insufficient"
+        if steps < minimum
+        else "measured",
+        "decode_steps": steps,
+        "mean_actual_batch": sum(int(batch) * count for batch, count in counts.items())
+        / steps
+        if steps
+        else None,
+        "peak_actual_batch": max(map(int, counts)) if steps else None,
+        "scope": "per-rank pure decode step-weighted mean; never summed over TP ranks",
+    }
+
+
+def comparison_telemetry(
+    runs: Sequence[Mapping[str, Any]], checks: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    """Bounded public admission evidence, independent of measured timing eligibility."""
+    arms: list[dict[str, Any]] = []
+    for label, run, check in zip(("A", "B", "C", "native"), runs, checks):
+        raw_reps = entries(run.get("repetitions"), 1000)
+        minimum = mapping(run.get("contract")).get("min_capture_steps")
+        minimum = minimum if integer(minimum, 1) else 64
+        reps = []
+        for raw_rep in raw_reps:
+            observers = [
+                observation(x) for x in entries(raw_rep.get("worker_observations"), 4)
+            ]
+            observers.sort(key=lambda x: x.get("rank", 4))
+            reps.append(
+                {
+                    **numbers(
+                        raw_rep,
+                        ("repetition", "request_count", "generated_tokens"),
+                        ints=True,
+                    ),
+                    "generation_status": status(raw_rep.get("generation_status")),
+                    "capture_status": status(raw_rep.get("capture_status")),
+                    "measurement_status": status(
+                        raw_rep.get("measurement_status", "complete")
+                    ),
+                    "worker_observations": observers,
+                    "worker_batch": [_worker_batch(x, minimum) for x in observers],
+                    "scheduler": scheduler(raw_rep.get("scheduler")),
+                }
+            )
+        arms.append(
+            {
+                "arm": label,
+                "output_variation": check.get("output_variation"),
+                "timing_eligible": check.get("timing_eligible") is True,
+                "repetitions_exported": len(reps),
+                "repetitions_requested": numbers(
+                    run.get("contract"), ("repetitions_requested",), ints=True
+                ).get("repetitions_requested"),
+                "repetitions": reps,
+            }
+        )
+    b, c = arms[1:3]
+    deltas = []
+    worker_available = (
+        len(b["repetitions"])
+        == len(c["repetitions"])
+        == b["repetitions_requested"]
+        == c["repetitions_requested"]
+        and len(b["repetitions"]) >= 3
+    )
+    for left, right in zip(b["repetitions"], c["repetitions"]):
+        for rep in (left, right):
+            batch = rep["worker_batch"]
+            observers = rep["worker_observations"]
+            if (
+                len(batch) != 4
+                or [x.get("rank") for x in batch] != [0, 1, 2, 3]
+                or any(x["status"] != "measured" for x in batch)
+                or any(
+                    x["decode_batch_step_counts"]
+                    != observers[0]["decode_batch_step_counts"]
+                    for x in observers
+                )
+            ):
+                worker_available = False
+        if worker_available:
+            deltas.append(
+                right["worker_batch"][0]["mean_actual_batch"]
+                - left["worker_batch"][0]["mean_actual_batch"]
+            )
+    worker_status = "insufficient"
+    if worker_available and deltas:
+        worker_status = (
+            "observed-increase"
+            if max(deltas) > 0 and min(deltas) >= 0
+            else "no-observed-increase"
+            if max(deltas) <= 0
+            else "insufficient"
+        )
+    frontend = [
+        mapping(rep["scheduler"].get(metric))
+        for arm in (b, c)
+        for rep in arm["repetitions"]
+        for metric in (
+            "kv_cache_usage",
+            "running_requests",
+            "waiting_requests",
+            "preemptions",
+        )
+    ]
+    frontend_present = [field for field in frontend if integer(field.get("samples"), 1)]
+    frontend_complete = bool(frontend) and all(
+        field.get("status") == "measured"
+        and integer(field.get("samples"), 1)
+        and (number(field.get("mean")) or integer(field.get("total")))
+        for field in frontend
+    )
+    causal_status = (
+        "unavailable"
+        if not frontend_present
+        else "available"
+        if frontend_complete and worker_available
+        else "incomplete"
+    )
+    if not (b["timing_eligible"] and c["timing_eligible"]):
+        causal_status = "incomplete"
+    return {
+        "arms": arms,
+        "admission_evidence": {
+            "worker_batch_status": worker_status,
+            "causal_evidence_status": causal_status,
+            "scheduler_status": "measured"
+            if frontend_complete
+            else "partial"
+            if frontend_present
+            else "unavailable",
+            "paired_repetitions": len(deltas) if worker_available else 0,
+            "scope": "B to C mean actual pure-decode batch per repetition; require consistent TP rank observations, use rank0 once; frontend samples are separate and not aligned to worker steps",
+            "interpretation": "timing remains measured with unchanged batch or unavailable scheduler; availability is not proof the entire throughput change was caused by admission; KV usage fraction is not occupied bytes",
+        },
+    }
+
+
 def pool_summary(raw: object) -> dict[str, Any]:
     pool = mapping(raw)
     rows = entries(pool.get("rows"), 65536)
@@ -558,6 +704,48 @@ def _svg(
     )
 
 
+def _admission_markdown(comparison: Mapping[str, Any]) -> list[str]:
+    evidence = mapping(comparison.get("admission_evidence"))
+    lines = [
+        f"B→C 实际batch观察：{evidence.get('worker_batch_status', 'unavailable')}；指标可用性：{evidence.get('causal_evidence_status', 'unavailable')}；frontend scheduler：{evidence.get('scheduler_status', 'unavailable')}。",
+        "",
+        "下表 worker 使用 rank0 一份逻辑计数，mean 按纯decode步骤加权；scheduler 使用独立frontend样本，二者不逐步对齐。batch未增加或scheduler不可用不会抹掉有效墙钟结果，指标齐全也不证明全部时间变化由准入导致。",
+        "",
+        "| arm | rep | worker mean / decode steps / status | KV usage mean / samples / status | running mean / samples / status | waiting mean / samples / status | preemptions total / samples / status | output audit |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+
+    def value(raw: object) -> str:
+        return f"{raw:.6g}" if number(raw) else "unavailable"
+
+    for arm in entries(comparison.get("arms"), 4):
+        audit = mapping(arm.get("output_variation")).get("status", "unavailable")
+        for rep in entries(arm.get("repetitions"), 1000):
+            worker = next(
+                (x for x in entries(rep.get("worker_batch"), 4) if x.get("rank") == 0),
+                {},
+            )
+            fields = [
+                f"{value(worker.get('mean_actual_batch'))} / {value(worker.get('decode_steps'))} / {worker.get('status', 'unavailable')}"
+            ]
+            for metric in (
+                "kv_cache_usage",
+                "running_requests",
+                "waiting_requests",
+                "preemptions",
+            ):
+                item = mapping(mapping(rep.get("scheduler")).get(metric))
+                fields.append(
+                    f"{value(item.get('total' if metric == 'preemptions' else 'mean'))} / {value(item.get('samples'))} / {item.get('status', 'unavailable')}"
+                )
+            lines.append(
+                f"| {arm['arm']} | {rep.get('repetition')} | "
+                + " | ".join(fields)
+                + f" | {audit} |"
+            )
+    return [*lines, ""]
+
+
 def export_report(
     source: Path, output: Path, *, comparisons: Sequence[Path] = ()
 ) -> dict[str, Any]:
@@ -639,6 +827,10 @@ def export_report(
         "",
         "验证原因：" + (", ".join(val["reasons"]) or "通过") + "。",
         "",
+        "整批输出重复变化审计："
+        + str(mapping(val.get("output_variation")).get("status", "unavailable"))
+        + "；变化不作为吞吐资格门槛，固定输出长度、有效hash、smoke与失败校验仍保留。",
+        "",
         "时间为包含 prefill 的整批生成墙钟；采集运行不进入正式吞吐。专家覆盖只针对 routed experts。TP 各 rank 的逻辑选择计数不能相加。",
         "",
         "KV allocated 是实际分配量；scheduler usage 是采样占用比例，不能冒充精确已使用字节。CPU 等待和 GPU 本地服务间隔不可直接相加；本地 load span 不代表 TP 全局净损失。",
@@ -682,6 +874,7 @@ def export_report(
         ):
             if key in comp:
                 markdown += [f"{key}: {comp[key]:.6g}", ""]
+        markdown += _admission_markdown(comp)
     coverage, misses = [], []
     for row in result["captures"]:
         if (

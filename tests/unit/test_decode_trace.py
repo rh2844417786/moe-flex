@@ -198,6 +198,33 @@ def test_scheduler_unavailable_and_invalid_values_not_occupancy():
     assert observer.stop()["kv_cache_usage"]["status"] == "unavailable"
 
 
+def test_scheduler_invalid_samples_preserve_partial_and_null_unavailable_counts():
+    from flexmoe.vllm.decode_trace import SchedulerObserver
+
+    original = SimpleNamespace(record=lambda **kwargs: None)
+    owner = SimpleNamespace(stat_logger=original)
+    observer = SchedulerObserver(owner)
+    observer.start()
+    for value in (0.5, None, float("nan"), -0.1, 1.1, True, "invalid"):
+        owner.stat_logger.record(
+            SimpleNamespace(kv_cache_usage=value), SimpleNamespace()
+        )
+    stats = observer.stop()
+    assert owner.stat_logger is original
+    assert stats["kv_cache_usage"] == {
+        "status": "partial",
+        "samples": 1,
+        "mean": 0.5,
+        "peak": 0.5,
+    }
+    assert stats["invalid_samples"]["kv_cache_usage"] == 6
+    for metric in ("running_requests", "waiting_requests", "preemptions"):
+        assert stats[metric]["status"] == "unavailable"
+        assert stats[metric]["samples"] == 0
+        assert stats["invalid_samples"][metric] == 7
+        assert stats[metric]["total" if metric == "preemptions" else "mean"] is None
+
+
 def test_worker_rpc_gateway_attaches_real_pool_and_restores(monkeypatch):
     from test_decode_pool_timing import observed_pool
     from test_expert_cache_runtime import invoke

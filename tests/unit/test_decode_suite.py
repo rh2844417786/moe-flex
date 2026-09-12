@@ -406,6 +406,99 @@ def test_recorded_native_eager_compilation_differences_remain_supported():
     assert result["engine_mode_tax_s"] == 2
 
 
+def test_output_variation_is_audit_without_rejecting_valid_timing():
+    rows = [evidence(), evidence("offload", 12), evidence("offload", 9, 1400)]
+    for row in rows:
+        row["repetitions"][1]["output_sha256"] = "8" * 64
+        row["performance_outputs_stable"] = False
+    validation = suite.validate_run(rows[0])
+    assert validation["timing_eligible"] is True
+    assert validation["elapsed_median_s"] == 10
+    assert validation["output_variation"]["status"] == "varied"
+    assert validation["output_variation"]["unique_outputs"] == 2
+    result = suite.compare_runs(*rows)
+    assert result["status"] == "measured"
+    assert result["matched_net_ratio"] == pytest.approx(10 / 9)
+    assert result["arms"][1]["output_variation"]["status"] == "varied"
+    assert "8" * 64 not in json.dumps(result)
+    rows[1]["repetitions"][0]["generated_tokens"] = 999
+    assert "fixed-output" in suite.compare_runs(*rows)["reasons"]
+    rows[1]["repetitions"][0]["generated_tokens"] = 1000
+    rows[1]["repetitions"][0]["output_sha256"] = "missing"
+    assert "fixed-output" in suite.compare_runs(*rows)["reasons"]
+    rows[1]["repetitions"][0]["output_sha256"] = "1" * 64
+    rows[1]["smoke"]["output_sha256"] = "7" * 64
+    assert "smoke-mismatch" in suite.compare_runs(*rows)["reasons"]
+
+
+def admission_run(row, batch, scheduler_status="measured"):
+    for rep in row["repetitions"]:
+        for obs in rep["worker_observations"]:
+            obs["decode_batch_step_counts"] = {str(batch): 256}
+        if scheduler_status == "missing":
+            continue
+        rep["scheduler"] = {
+            "kv_cache_usage": {
+                "status": scheduler_status,
+                "samples": 7,
+                "mean": 0.5,
+                "peak": 0.8,
+            },
+            "running_requests": {
+                "status": "measured",
+                "samples": 7,
+                "mean": 12,
+                "peak": 14,
+            },
+            "waiting_requests": {
+                "status": "measured",
+                "samples": 7,
+                "mean": 3,
+                "peak": 4,
+            },
+            "preemptions": {"status": "measured", "samples": 7, "total": 2},
+            "invalid_samples": {
+                "kv_cache_usage": 1 if scheduler_status == "partial" else 0
+            },
+        }
+    return row
+
+
+@pytest.mark.parametrize(
+    "c_batch,scheduler_status,worker_status,causal_status",
+    [
+        (4, "measured", "observed-increase", "available"),
+        (2, "measured", "no-observed-increase", "available"),
+        (4, "missing", "observed-increase", "unavailable"),
+        (4, "partial", "observed-increase", "incomplete"),
+    ],
+)
+def test_comparison_preserves_per_arm_admission_and_causal_availability(
+    c_batch, scheduler_status, worker_status, causal_status
+):
+    rows = [
+        admission_run(evidence(), 2),
+        admission_run(evidence("offload", 12), 2, scheduler_status),
+        admission_run(evidence("offload", 9, 1400), c_batch, scheduler_status),
+    ]
+    result = suite.compare_runs(*rows)
+    assert result["status"] == "measured"
+    assert result["kv_recovery_s"] == 3
+    assert result["admission_evidence"]["worker_batch_status"] == worker_status
+    assert result["admission_evidence"]["causal_evidence_status"] == causal_status
+    rep = result["arms"][2]["repetitions"][0]
+    assert rep["worker_observations"][0]["decode_batch_step_counts"] == {
+        str(c_batch): 256
+    }
+    assert rep["worker_batch"][0]["decode_steps"] == 256
+    assert rep["worker_batch"][0]["mean_actual_batch"] == c_batch
+    assert len(rep["worker_batch"]) == 4
+    if scheduler_status != "missing":
+        assert rep["scheduler"]["kv_cache_usage"]["samples"] == 7
+        assert rep["scheduler"]["kv_cache_usage"]["mean"] == 0.5
+        assert rep["scheduler"]["preemptions"]["total"] == 2
+
+
 def test_plan_is_finite_executable_and_requires_actual_kv_input():
     p = suite.build_plan(
         stage="baseline",
