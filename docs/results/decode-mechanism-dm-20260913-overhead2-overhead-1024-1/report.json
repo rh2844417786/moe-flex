@@ -1,0 +1,65 @@
+{
+  "actual_kv": {},
+  "artifact_errors": [
+    {
+      "kind": "smoke",
+      "reason": "missing-artifact"
+    }
+  ],
+  "artifact_kind": "decode-report",
+  "cache": {},
+  "captures": [],
+  "cohort_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+  "deployment_gain_proven": false,
+  "diagnostic_only": true,
+  "evidence_kind": "unavailable",
+  "expert_cache_stats": [],
+  "final_memory": [],
+  "formal_offload_gain": false,
+  "geometry": {},
+  "interpretation": "elapsed includes prefill; profile is instrumented; routed-expert histograms are logically replicated across TP ranks and must not be summed; selection probability is edge share; allocated KV is not scheduler occupancy",
+  "launcher": {
+    "exit_code": 1,
+    "status": "failed"
+  },
+  "memory": [],
+  "mode": "unavailable",
+  "repetitions": [],
+  "schema_version": 1,
+  "smoke": {
+    "status": "unavailable"
+  },
+  "status": "unavailable",
+  "validation": {
+    "elapsed_median_s": null,
+    "eligible_repetitions": 0,
+    "output_variation": {
+      "producer_reported_stable": null,
+      "repetitions": 0,
+      "scope": "whole-output repeat variation is audit only; fixed counts, valid hashes and smoke remain required",
+      "status": "unavailable",
+      "unique_outputs": 0,
+      "valid_output_hashes": 0
+    },
+    "reasons": [
+      "artifact-labels",
+      "capture-failed",
+      "engine-policy",
+      "generation-incomplete",
+      "input-uniqueness",
+      "instrumented-timing",
+      "memory-evidence",
+      "missing-artifact",
+      "missing-identity",
+      "missing-version",
+      "observer-finalization",
+      "repetitions-incomplete",
+      "smoke-evidence",
+      "workload-contract"
+    ],
+    "status": "ineligible",
+    "throughput_median_tokens_s": null,
+    "timing_eligible": false
+  },
+  "workload": {}
+}
