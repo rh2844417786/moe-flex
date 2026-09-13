@@ -149,7 +149,9 @@ def test_applied_patch_compiles_and_cache_hook_keeps_native_topk(tmp_path, monke
         has_bias=False,
         fused_experts=lambda **kw: kw["hidden_states"] + 2,
     )
-    native = lambda x, logits: inner(state, layer, x, False, 2, logits, True)
+    def native(x, logits):
+        return inner(state, layer, x, False, 2, logits, True)
+
     outer = method("FusedMoE")
     result = outer(SimpleNamespace(forward_native=native), hidden, torch.zeros(1, 4))
     assert torch.equal(result, hidden + 1)

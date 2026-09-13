@@ -201,16 +201,18 @@ def test_real_trace_replay_analyze_and_atomic_failure(tmp_path):
             unique_selected_request_count=2,
             repeated_request_count=8,
         )
-        wrapper = lambda t: diagnostic_artifact(
-            "demand-trace",
-            {
-                "trace": t,
-                "capture": {"full_workload": True},
-                "generation_status": "complete",
-                "timing_eligible": False,
-                "missing_evidence": [],
-            },
-        )
+        def wrapper(t):
+            return diagnostic_artifact(
+                "demand-trace",
+                {
+                    "trace": t,
+                    "capture": {"full_workload": True},
+                    "generation_status": "complete",
+                    "timing_eligible": False,
+                    "missing_evidence": [],
+                },
+            )
+
         path = tmp_path / f"trace-{rank}.json.gz"
         with gzip.open(path, "wt") as handle:
             json.dump(wrapper(raw), handle)

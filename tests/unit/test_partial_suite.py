@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import subprocess
 from copy import deepcopy
 from pathlib import Path
@@ -239,10 +240,18 @@ def test_launcher_help_and_root_guard_execute_without_gpu():
     assert help_result.returncode == 0
     assert "scan" in help_result.stdout and "confirm" in help_result.stdout
     rejected = subprocess.run(
-        ["bash", str(path), "scan"], capture_output=True, text=True, check=False
+        ["bash", str(path), "scan"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "GPU_IDS": ""},
     )
-    assert rejected.returncode == 2
-    assert "expected /home/jovyan/wangtonghan/moe-flex" in rejected.stderr
+    if Path.cwd().resolve() == Path("/home/jovyan/wangtonghan/moe-flex"):
+        assert rejected.returncode == 1
+        assert "GPU_IDS must explicitly select" in rejected.stderr
+    else:
+        assert rejected.returncode == 2
+        assert "expected /home/jovyan/wangtonghan/moe-flex" in rejected.stderr
 
 
 def test_export_produces_numeric_json_csv_and_honest_markdown(tmp_path: Path):

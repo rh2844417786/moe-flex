@@ -49,13 +49,13 @@ def capture():
             "activation_rows": [
                 {
                     "step": s,
-                    "layer": l,
+                    "layer": layer_index,
                     "phase": "decode",
                     "actual_batch": 2,
                     "histogram": [2, 1, 1, 0],
                 }
                 for s in range(64)
-                for l in range(2)
+                for layer_index in range(2)
             ],
             "model_step_spans": [{"step": 0, "status": "measured", "cuda_s": 0.006}],
             "pool_profile": {
