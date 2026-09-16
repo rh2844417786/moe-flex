@@ -3,7 +3,7 @@
 在服务器前台执行；需要脱离终端时，先进入已有 tmux 会话。四张卡必须由你显式指定且独占。默认不自动选择卡、不终止其他任务、不下载权重或依赖、不修改 Git、不自动 push。
 
 ```bash
-cd /home/jovyan/wangtonghan/moe-flex && git pull --ff-only origin repro/fluxmoe && GPU_IDS=0,1,2,3 bash scripts/server/run_all_experiments.sh
+cd /home/jovyan/wangtonghan/moe-flex && git switch repro/fluxmoe && git pull --ff-only origin repro/fluxmoe && GPU_IDS=0,1,2,3 bash scripts/server/run_all_experiments.sh
 ```
 
 主机需要 Python 3.10–3.13 标准库、Git、Docker 及已有 GPU 运行权限。沿用固定 vLLM 0.10.2 镜像/补丁、已有唯一输入集和只读 Qwen3-Next 权重。镜像构建沿用 build.sh 的既有基础镜像拉取规则，其余安装离线。运行账户必须可读容器生成的原始报告并可写项目内缓存/输出；权限错误记为 artifact-permissions，不自动 chown 或更改全局权限。
@@ -40,7 +40,20 @@ bash scripts/server/run_all_experiments.sh status --run-id ID
 
 每次退出生成一个新 `docs/results/decode-mechanism-suite-ID/report-NNN/`，含中文汇总、并行对比、各 decode 尝试的白名单报告以及有证据时的独立 TP4 A/B/C 对比。缺失吞吐保持 null，失败不记为零。报告明确诊断范围，不把仪器化采集当正式吞吐，不保证卸载加速，也不保证全部硬件点成功。
 
-程序打印本次白名单归档的精确路径，例如 `runs/experiment-suite/ID/public-report-001.tar.gz`。在本地终端回传这一文件即可；将 `YOUR_SERVER` 替换为已有 SSH 主机别名，编号使用程序实际打印的编号：
+主要回传方式沿用服务器 push 到 GitHub、本地 Mac pull。先完成本次所需的所有 resume/retry，再提交结果：提交会改变 SHA，此后原 suite 将拒绝继续恢复。将下面的 `ID` 和 `NNN` 替换成程序打印的本次公开目录；只添加这个明确目录，不使用 `git add .`：
+
+```bash
+# 服务器：人工审核该公开目录后回传
+git add -- docs/results/decode-mechanism-suite-ID/report-NNN
+git commit -m "results: publish experiment suite ID report NNN"
+git push origin repro/fluxmoe
+
+# Mac：在本项目 repro/fluxmoe 检出中获取结果
+git switch repro/fluxmoe
+git pull --ff-only origin repro/fluxmoe
+```
+
+程序也打印白名单归档的精确路径，例如 `runs/experiment-suite/ID/public-report-001.tar.gz`。如已有可用 SSH/SCP，可选择在本地直接回传这个文件；将 `YOUR_SERVER` 替换为已有 SSH 主机别名，编号使用程序实际打印的编号：
 
 ```bash
 scp YOUR_SERVER:/home/jovyan/wangtonghan/moe-flex/runs/experiment-suite/ID/public-report-001.tar.gz ./
