@@ -6,7 +6,7 @@
 cd /home/jovyan/wangtonghan/moe-flex && git switch repro/fluxmoe && git pull --ff-only origin repro/fluxmoe && GPU_IDS=0,1,2,3 bash scripts/server/run_all_experiments.sh
 ```
 
-主机需要 Python 3.10–3.13 标准库、Git、Docker 及已有 GPU 运行权限。沿用固定 vLLM 0.10.2 镜像/补丁、已有唯一输入集和只读 Qwen3-Next 权重。镜像构建沿用 build.sh 的既有基础镜像拉取规则，其余安装离线。运行账户必须可读容器生成的原始报告并可写项目内缓存/输出；权限错误记为 artifact-permissions，不自动 chown 或更改全局权限。
+主机需要 Python 3.10–3.13 标准库、Git、Docker、可执行且能查询所选卡 index/UUID 的主机 `nvidia-smi`，以及已有 GPU 运行权限。沿用固定 vLLM 0.10.2 镜像/补丁、已有唯一输入集和只读 Qwen3-Next 权重。镜像构建沿用 build.sh 的既有基础镜像拉取规则，其余安装离线。运行账户必须可读容器生成的原始报告并可写项目内缓存/输出；权限错误记为 artifact-permissions，不自动 chown 或更改全局权限。
 
 启动时自动打印唯一 suite ID，默认每点 7200 秒，加 60 秒外层宽限；预检另有最多 300 秒加 60 秒宽限。每个 GPU 点先做现有四卡预检，decode 包装器还会再做一次自己的预检。这会增加启动成本，不进入 runner 测量计时。预检占卡或本次容器清理无法确认时停止后续 GPU 工作。
 
@@ -25,6 +25,8 @@ GPU_IDS=0,1,2,3 bash scripts/server/run_all_experiments.sh --dry-run
 ## 恢复与状态
 
 把 `ID` 替换成首次启动打印的 suite ID。保持原 SHA、相同 GPU_IDS、相同 timeout。恢复前不要再次拉取新代码。成功点只有原始文件完整、校验和及语义验证通过才复用。旧目录永不覆盖；中断或失效输出使用新 attempt，已失败的点默认不重试。
+
+每次运行或恢复都会先通过主机 `nvidia-smi` 只读查询所选四张卡的 index→物理 UUID 映射（10 秒查询限时），按 GPU_IDS 顺序保存在私有配置中，不创建 CUDA 上下文。同样的数字编号若换成其他物理卡，会在复用旧证据或启动实验子进程前拒绝恢复；缺失、格式错误或重复身份也拒绝。查询行顺序变化不影响映射。`--dry-run` 和 `status` 不探测 GPU。旧版缺少此身份字段的检查点不能自动迁移，需用新 ID 开始；UUID 不进入公开报告或归档。
 
 ```bash
 GPU_IDS=0,1,2,3 bash scripts/server/run_all_experiments.sh --run-id ID --resume

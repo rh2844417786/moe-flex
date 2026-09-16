@@ -293,3 +293,138 @@ def test_first_pid_checkpoint_failure_reaps_child_before_cid_cleanup(
                 os.waitpid(child_pid, 0)
             except ChildProcessError:
                 pass
+
+
+def host_identity_recorder(tmp_path, monkeypatch):
+    """Only host executables are doubled; CLI/config/state/export stay real."""
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    gpu = binaries / "nvidia-smi"
+    gpu.write_text(f"""#!{sys.executable}
+import json,pathlib,sys
+root=pathlib.Path({str(tmp_path)!r})
+args=sys.argv[1:]
+with (root/'inventory-calls.jsonl').open('a') as stream: stream.write(json.dumps(args)+'\\n')
+assert args == ['--query-gpu=index,uuid','--format=csv,noheader','--id=2,4,5,7'], args
+print((root/'inventory.txt').read_text(),end='')
+""")
+    gpu.chmod(0o755)
+    git = binaries / "git"
+    git.write_text(f"""#!{sys.executable}
+import sys
+args=sys.argv[1:]
+if args == ['rev-parse','HEAD']: print('a'*40)
+elif args == ['status','--porcelain','--','.',' :(exclude)docs/results/decode-mechanism-*'.strip()]: pass
+else: raise AssertionError(args)
+""")
+    git.chmod(0o755)
+    monkeypatch.setenv("PATH", str(binaries) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("GPU_IDS", "2,4,5,7")
+    rows = [
+        f"{index}, GPU-{digit * 8}-{digit * 4}-{digit * 4}-{digit * 4}-{digit * 12}"
+        for index, digit in ((2, "a"), (4, "b"), (5, "c"), (7, "d"))
+    ]
+    (tmp_path / "inventory.txt").write_text("\n".join(rows) + "\n")
+    return rows
+
+
+def identity_cli_fixture(tmp_path, monkeypatch):
+    m = modules()
+    rows = host_identity_recorder(tmp_path, monkeypatch)
+    monkeypatch.setattr(m, "SERVER_ROOT", tmp_path)
+    for relative in (m.decode_suite.DATA, m.decode_suite.MANIFEST):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("fixture")
+
+    def bounded_pipeline(suite):
+        marker = tmp_path / "pipeline-entry.log"
+        with marker.open("a") as stream:
+            stream.write("entered\n")
+        suite.executor.run("cached-point", command, valid)
+
+    monkeypatch.setattr(m.Suite, "pipeline", bounded_pipeline)
+    args = ["run", "--run-id", "suite", "--project-root", str(tmp_path)]
+    return m, rows, args
+
+
+def test_cli_resume_binds_live_physical_identity_before_reuse_or_launch(
+    tmp_path, monkeypatch
+):
+    import tarfile
+
+    m, rows, args = identity_cli_fixture(tmp_path, monkeypatch)
+    assert m.main(args) == 0
+    checkpoint = tmp_path / "runs/experiment-suite/suite/state.json"
+    original = json.loads(checkpoint.read_text())
+    first = original["points"]["cached-point"]["attempts"][0]
+    assert original["config"]["gpu_inventory"] == [
+        {"index": int(row.split(",")[0]), "uuid": row.split(", ")[1]} for row in rows
+    ]
+    # CLI output order changes do not change index->physical UUID mapping.
+    (tmp_path / "inventory.txt").write_text("\n".join(reversed(rows)) + "\n")
+    assert m.main([*args, "--resume"]) == 0
+    same = json.loads(checkpoint.read_text())
+    assert len(same["points"]["cached-point"]["attempts"]) == 1
+    assert (
+        same["points"]["cached-point"]["attempts"][0]["directory"] == first["directory"]
+    )
+    with tarfile.open(same["public_archive"]) as archive:
+        for member in archive.getmembers():
+            contents = archive.extractfile(member).read().decode()
+            assert "GPU-" not in contents
+            assert "gpu_inventory" not in contents
+    before = checkpoint.read_bytes()
+    changed = [rows[0].replace("a", "e"), *rows[1:]]
+    (tmp_path / "inventory.txt").write_text("\n".join(changed) + "\n")
+    assert m.main([*args, "--resume"]) == 2
+    assert checkpoint.read_bytes() == before
+    assert (tmp_path / "pipeline-entry.log").read_text().splitlines() == [
+        "entered",
+        "entered",
+    ]
+    assert len((tmp_path / "inventory-calls.jsonl").read_text().splitlines()) == 3
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "missing",
+        "duplicate-index",
+        "duplicate-uuid",
+        "malformed",
+        "unselected",
+        "empty",
+    ],
+)
+def test_cli_rejects_incomplete_or_ambiguous_host_gpu_identity(
+    tmp_path, monkeypatch, defect
+):
+    m, rows, args = identity_cli_fixture(tmp_path, monkeypatch)
+    if defect == "missing":
+        rows.pop()
+    elif defect == "duplicate-index":
+        rows[1] = rows[1].replace("4,", "2,")
+    elif defect == "duplicate-uuid":
+        rows[1] = "4, " + rows[0].split(", ")[1]
+    elif defect == "malformed":
+        rows[0] = "2, GPU-not-a-uuid"
+    elif defect == "unselected":
+        rows[0] = rows[0].replace("2,", "3,")
+    else:
+        rows = []
+    (tmp_path / "inventory.txt").write_text("\n".join(rows))
+    assert m.main(args) == 2
+    assert not (tmp_path / "runs").exists()
+    assert not (tmp_path / "pipeline-entry.log").exists()
+
+
+def test_dry_run_and_status_do_not_probe_physical_gpu_inventory(tmp_path, monkeypatch):
+    m, _, args = identity_cli_fixture(tmp_path, monkeypatch)
+    assert m.main([*args, "--dry-run"]) == 0
+    assert not (tmp_path / "inventory-calls.jsonl").exists()
+    with m.ExperimentState(tmp_path, "suite", {}) as state:
+        state.data["status"] = "partial"
+        state.save()
+    assert m.main(["status", "--run-id", "suite", "--project-root", str(tmp_path)]) == 0
+    assert not (tmp_path / "inventory-calls.jsonl").exists()

@@ -6,6 +6,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -63,6 +64,47 @@ def gpu_ids(value: str) -> str:
     ):
         raise ValueError("GPU_IDS must explicitly name four distinct numeric GPUs")
     return value
+
+
+def host_gpu_inventory(ids: str) -> list[dict[str, int | str]]:
+    """Bind selected host indices to physical UUIDs without creating CUDA state."""
+    selected = [int(value) for value in gpu_ids(ids).split(",")]
+    result = subprocess.run(
+        [
+            "nvidia-smi",
+            "--query-gpu=index,uuid",
+            "--format=csv,noheader",
+            f"--id={ids}",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=10,
+    )
+    inventory: dict[int, str] = {}
+    for line in result.stdout.splitlines():
+        fields = [value.strip() for value in line.split(",")]
+        if (
+            len(fields) != 2
+            or re.fullmatch(r"0|[1-9][0-9]*", fields[0]) is None
+            or re.fullmatch(
+                r"GPU-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}",
+                fields[1],
+            )
+            is None
+        ):
+            raise ValueError("selected physical GPU inventory is malformed")
+        index, physical_uuid = int(fields[0]), "GPU-" + fields[1][4:].lower()
+        if (
+            index not in selected
+            or index in inventory
+            or physical_uuid in inventory.values()
+        ):
+            raise ValueError("selected physical GPU inventory is ambiguous")
+        inventory[index] = physical_uuid
+    if set(inventory) != set(selected):
+        raise ValueError("selected physical GPU inventory is incomplete")
+    return [{"index": index, "uuid": inventory[index]} for index in selected]
 
 
 def select_kv(raw: Mapping[str, Any], sha: str) -> tuple[int, int] | None:
@@ -775,6 +817,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         config = {
             "sha": sha,
             "gpu_ids": ids,
+            "gpu_inventory": host_gpu_inventory(ids),
             "timeout_s": args.timeout_s,
             "grace_s": 60,
             "model_path": decode_suite.MODEL,
