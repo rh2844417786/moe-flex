@@ -1,5 +1,7 @@
 # 交给服务器 Codex 的执行说明
 
+现在可直接使用[一键实验与恢复入口](oneclick-experiments.md)，无需服务器 Codex 人工选择参数。该入口默认不提交或 push，下面保留原手动操作流程作为逐点核查参考。
+
 请在 `/home/jovyan/wangtonghan/moe-flex` 的 `repro/fluxmoe` 分支执行已批准的解码机制实测，先阅读 `docs/decode-mechanism-runbook.md` 与绑定设计 `docs/superpowers/specs/2026-09-12-decode-mechanism.md`。Mac 已完成的 CPU 测试只验证实现，不是 H100 性能证据。
 
 使用 `git pull --ff-only origin repro/fluxmoe` 获取已提交实现，记录 SHA，按既有 `scripts/server/build.sh` 构建/核对固定镜像，然后整个实验组保持同SHA。GPU仅用四张独占H100、已有 Qwen3-Next-80B-A3B-Instruct 权重、TP4 BF16；不下载权重、依赖或tokenizer，不写项目外，不改/mnt/public_data，不终止别人的任务。所有GPU点经 `run_decode_mechanism.sh`，复用独占预检、离线项目缓存和容器内timeout。重复尝试用新ID，保留所有失败/部分采集/smoke/日志。

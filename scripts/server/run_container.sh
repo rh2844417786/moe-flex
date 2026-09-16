@@ -1,6 +1,36 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+container_owned_arguments() {
+  owned_args=()
+  if [[ -z "${FLEXMOE_CONTAINER_CID_DIR:-}" ]]; then return 0; fi
+  local cid_directory
+  cid_directory="$(python3 -S - "${project_root}" "${FLEXMOE_CONTAINER_CID_DIR}" \
+    "${FLEXMOE_CONTAINER_OWNER:-}" "${FLEXMOE_CONTAINER_SUITE:-}" \
+    "${FLEXMOE_CONTAINER_SHA:-}" "${git_sha}" <<'PY'
+import pathlib
+import re
+import sys
+import tempfile
+root, directory = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+if root.resolve() != root or directory.resolve() != directory or not directory.is_relative_to(root) or directory == root or not directory.is_dir():
+    raise SystemExit("owned CID directory must be existing, canonical and project bounded")
+if any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", value) for value in sys.argv[3:5]):
+    raise SystemExit("owned container requires safe owner and suite labels")
+if not re.fullmatch(r"[0-9a-f]{40}", sys.argv[5]) or sys.argv[5] != sys.argv[6]:
+    raise SystemExit("owned container SHA differs from checkout")
+print(tempfile.mkdtemp(prefix="invocation-", dir=directory))
+PY
+  )" || return 12
+  owned_args=(--cidfile "${cid_directory}/container.cid"
+    --label "io.moe-flex.owner=${FLEXMOE_CONTAINER_OWNER}"
+    --label "io.moe-flex.suite=${FLEXMOE_CONTAINER_SUITE}"
+    --label "io.moe-flex.sha=${git_sha}")
+}
+
+# Source only the real owned-argument builder for shell boundary tests.
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then return 0; fi
+
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 expected_root="/home/jovyan/wangtonghan/moe-flex"
 if [[ "${project_root}" != "${expected_root}" ]]; then
@@ -74,7 +104,9 @@ nccl_nvls_enable="${NCCL_NVLS_ENABLE:-0}"
 
 # Docker CLI 29 parses an unquoted comma-separated device list as both a count
 # and DeviceIDs. Preserve the inner quotes as part of the argument.
+container_owned_arguments
 exec docker run --rm \
+  "${owned_args[@]}" \
   --name "${container_name}" \
   --entrypoint "" \
   --gpus "\"device=${GPU_IDS}\"" \

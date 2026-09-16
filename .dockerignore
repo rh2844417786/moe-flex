@@ -6,6 +6,8 @@ artifacts
 build
 dist
 runs
+.superpowers
+docs/results
 *.egg-info
 *.so
 __pycache__
