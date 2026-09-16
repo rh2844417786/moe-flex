@@ -108,6 +108,69 @@ def test_failed_preflight_stops_before_main_child(tmp_path):
         assert attempt["reason"] == "preflight-failed"
 
 
+@pytest.mark.parametrize(
+    "message,listed,ps_code,want",
+    [
+        ("error: no such object: {cid}\n", False, 0, True),
+        ("Error: No such object: {cid}\n", False, 0, True),
+        ("Error response from daemon: No such container: {cid}\n", False, 0, True),
+        ("error: no such object: {cid}\n", True, 0, False),
+        ("error: no such object: {cid}\n", False, 1, False),
+        ("permission denied", False, 0, False),
+        ("error: no such object: other-container\n", False, 0, False),
+    ],
+)
+def test_auto_removed_cid_requires_matching_absence_and_live_inventory(
+    tmp_path, monkeypatch, message, listed, ps_code, want
+):
+    m = modules()
+    state_module = sys.modules[m.PointExecutor.__module__]
+    cid = "a" * 64
+    path = tmp_path / "cids/one/container.cid"
+    path.parent.mkdir(parents=True)
+    path.write_text(cid)
+
+    def docker(*args):
+        if args == ("inspect", cid):
+            return subprocess.CompletedProcess(args, 1, "\n", message.format(cid=cid))
+        if args == ("ps", "-aq", "--no-trunc"):
+            return subprocess.CompletedProcess(args, ps_code, cid if listed else "", "")
+        raise AssertionError(f"Absent or ambiguous containers must not be removed: {args}")
+
+    monkeypatch.setattr(state_module, "_docker", docker)
+    assert state_module.cleanup_containers(
+        tmp_path, {"cid_dir": str(path.parent.parent), "owner": "owner"}, "b" * 40, "suite"
+    ) is want
+
+
+def test_successful_preflight_preserves_cleanup_failure_reason(tmp_path, monkeypatch):
+    m = modules()
+    state_module = sys.modules[m.PointExecutor.__module__]
+
+    def docker(*args):
+        assert args[0] in ("inspect", "ps")
+        return subprocess.CompletedProcess(args, 1, "", "daemon unavailable")
+
+    monkeypatch.setattr(state_module, "_docker", docker)
+    code = (
+        "import pathlib,sys; p=pathlib.Path(sys.argv[1]); "
+        "c=p.parent/'cids'/'one'; c.mkdir(); "
+        "(c/'container.cid').write_text('a'*64); p.write_text('{\"ok\": true}')"
+    )
+    with m.ExperimentState(tmp_path, "suite", {"sha": "b" * 40}) as state:
+        executor = m.PointExecutor(state, timeout_s=2, grace_s=0.1)
+        with pytest.raises(m.SafetyStop, match="cleanup-unproven"):
+            executor.run(
+                "corpus", command, valid,
+                preflight=lambda p: [sys.executable, "-c", code, str(p)],
+            )
+        attempt = state.data["points"]["corpus"]["attempts"][0]
+        assert attempt["reason"] == "cleanup-unproven"
+        assert attempt["preflight_exit_code"] == 0
+        assert attempt["cleanup"] == "unproven"
+        assert not (Path(attempt["directory"]) / "result.json").exists()
+
+
 def test_sigterm_persists_interrupted_and_resume_runs_fresh_attempt(tmp_path):
     m = modules()
     runner = tmp_path / "driver.py"

@@ -192,7 +192,11 @@ def cleanup_containers(
                 listing = _docker("ps", "-aq", "--no-trunc")
                 if listing.returncode or cid in listing.stdout.splitlines():
                     return False
-                if "No such" not in inspected.stderr:
+                if not re.search(
+                    rf"\bno such (?:object|container):\s*{re.escape(cid)}(?:\s|$)",
+                    inspected.stderr,
+                    flags=re.IGNORECASE,
+                ):
                     return False
                 continue
             rows = json.loads(inspected.stdout)
@@ -393,6 +397,7 @@ class PointExecutor:
                     "preflight",
                     min(self.timeout_s, 300) + self.grace_s,
                 )
+                attempt["preflight_exit_code"] = code
                 if code != 0 or read_json(preflight_path).get("ok") is not True:
                     raise SafetyStop("preflight-failed")
                 if not cleanup_containers(
@@ -423,8 +428,13 @@ class PointExecutor:
                 and not (directory / "command.stdout.log").exists()
             ):
                 unsafe = True
-        except SafetyStop:
-            attempt.update(status="failed", reason="preflight-failed")
+        except SafetyStop as error:
+            reason = (
+                "cleanup-unproven"
+                if str(error) == "cleanup-unproven"
+                else "preflight-failed"
+            )
+            attempt.update(status="failed", reason=reason)
             unsafe = True
         except (KeyboardInterrupt, InterruptedError) as error:
             attempt.update(status="interrupted", reason="signal")
@@ -458,7 +468,11 @@ class PointExecutor:
                 flush=True,
             )
         if not clean or unsafe:
-            raise SafetyStop("cleanup-unproven" if not clean else "preflight-failed")
+            raise SafetyStop(
+                "cleanup-unproven"
+                if not clean
+                else attempt.get("reason") or "preflight-failed"
+            )
         if interrupted is not None:
             raise interrupted
         return attempt
