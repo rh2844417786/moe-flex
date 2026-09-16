@@ -298,9 +298,11 @@ class PointExecutor:
                 stderr=err,
                 start_new_session=True,
             )
-            attempt[f"{label}_pid"] = process.pid
-            self.state.save()
             try:
+                # Checkpointing can raise on signals or I/O just like waiting;
+                # once spawned, the launcher must stay inside this cleanup scope.
+                attempt[f"{label}_pid"] = process.pid
+                self.state.save()
                 return process.wait(timeout=timeout)
             finally:
                 # Kill only the process group created by this invocation. This

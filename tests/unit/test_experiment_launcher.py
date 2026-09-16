@@ -200,3 +200,96 @@ def test_reserved_cid_without_file_needs_reachable_daemon_proof(tmp_path, monkey
         "a" * 40,
         "suite",
     )
+
+
+@pytest.mark.parametrize("label", ["command", "preflight"])
+@pytest.mark.parametrize("failure", ["sigint", "sigterm", "io"])
+def test_first_pid_checkpoint_failure_reaps_child_before_cid_cleanup(
+    tmp_path, monkeypatch, label, failure
+):
+    """A failed first PID save must not leave a launcher able to create a CID."""
+    m = modules()
+    state_module = sys.modules[m.PointExecutor.__module__]
+    cleanup = state_module.cleanup_containers
+    observed_alive = []
+    child_pid = None
+
+    def alive(pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
+    def observe_cleanup(*args):
+        observed_alive.append(alive(child_pid))
+        return cleanup(*args)
+
+    config = {"sha": "a" * 40}
+    try:
+        with m.ExperimentState(tmp_path, "suite", config) as state:
+            save = state.save
+
+            def fail_first_pid_save():
+                nonlocal child_pid
+                attempts = state.data["points"].get("point", {}).get("attempts", [])
+                if attempts and child_pid is None and f"{label}_pid" in attempts[-1]:
+                    child_pid = attempts[-1][f"{label}_pid"]
+                    assert alive(child_pid)
+                    if failure == "io":
+                        raise OSError("injected first PID checkpoint write failure")
+                    m.interrupted(
+                        signal.SIGINT if failure == "sigint" else signal.SIGTERM, None
+                    )
+                save()
+
+            monkeypatch.setattr(state, "save", fail_first_pid_save)
+            monkeypatch.setattr(state_module, "cleanup_containers", observe_cleanup)
+            executor = m.PointExecutor(state, timeout_s=30, grace_s=0.1)
+            preflight = (
+                (lambda p: [sys.executable, "-c", "import time; time.sleep(30)"])
+                if label == "preflight"
+                else None
+            )
+
+            def run():
+                return executor.run(
+                    "point",
+                    lambda d, i: command(d, i, sleep=30),
+                    valid,
+                    preflight=preflight,
+                )
+
+            if failure != "io":
+                with pytest.raises(InterruptedError):
+                    run()
+            elif label == "preflight":
+                with pytest.raises(m.SafetyStop):
+                    run()
+            else:
+                assert run()["status"] == "failed"
+            saved = json.loads((state.directory / "state.json").read_text())
+            old = saved["points"]["point"]["attempts"][0]
+            assert old["status"] == ("failed" if failure == "io" else "interrupted")
+            assert old["cleanup"] == "complete"
+            assert child_pid is not None
+            assert observed_alive == [False], "CID cleanup ran with a live launcher"
+            assert not alive(child_pid), "owned child was not reaped"
+        monkeypatch.setattr(state_module, "cleanup_containers", cleanup)
+        with m.ExperimentState(tmp_path, "suite", config, resume=True) as state:
+            result = m.PointExecutor(
+                state, timeout_s=1, grace_s=0.1, retry_failed=failure == "io"
+            ).run("point", command, valid)
+            assert result["status"] == "complete" and result["number"] == 2
+            assert Path(old["directory"]).is_dir()
+    finally:
+        # RED runs must not leak the deliberately exposed, test-owned process.
+        if child_pid is not None:
+            try:
+                os.killpg(child_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                os.waitpid(child_pid, 0)
+            except ChildProcessError:
+                pass
