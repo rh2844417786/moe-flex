@@ -217,8 +217,65 @@ def test_comparison_rejects_identity_or_global_budget_change(
     raw: Any, tmp_path: Path, key: str, value: Any
 ) -> None:
     first = save(tmp_path, raw, "one.json")
-    raw["contract"][key] = value
-    result = report.compare_parallel([first, save(tmp_path, raw, "two.json")])
+    other = copy.deepcopy(raw)
+    other["config"] = "tp4"
+    other["partitions"] = [[0, 1, 2, 3, 4]]
+    worker = copy.deepcopy(other["workers"][0])
+    worker["indices"] = [0, 1, 2, 3, 4]
+    worker["devices"] = [
+        dict(device, rank=rank)
+        for rank, device in enumerate(d for w in other["workers"] for d in w["devices"])
+    ]
+    worker["memory"] = [
+        dict(memory, rank=rank)
+        for rank, memory in enumerate(m for w in other["workers"] for m in w["memory"])
+    ]
+    worker["resolved_policy"]["parallel_config"].update(
+        tensor_parallel_size=4, data_parallel_size=1, enable_expert_parallel=False
+    )
+    worker["resolved_policy"]["scheduler_config"].update(
+        max_num_seqs=1024, max_num_batched_tokens=8192
+    )
+    other["workers"] = [worker]
+    other["requested_policy"] = copy.deepcopy(worker["resolved_policy"])
+    for repetition in other["repetitions"]:
+        repetition["per_rank"] = [
+            {
+                "dp_rank": 0,
+                "indices": [0, 1, 2, 3, 4],
+                "status": "complete",
+                "request_count": 5,
+                "generated_tokens": 50,
+                "output_counts": [10] * 5,
+                "output_hashes": ["a" * 64] * 5,
+                "latencies_s": [0.2] * 5,
+                "memory": copy.deepcopy(worker["memory"]),
+            }
+        ]
+    second = save(tmp_path, other, "two.json")
+    assert report.summarize_parallel(first)["status"] == "complete"
+    assert report.summarize_parallel(second)["status"] == "complete"
+    assert report.compare_parallel([first, second])["status"] == "eligible"
+
+    other["contract"][key] = value
+    if key == "max_num_seqs":
+        worker["resolved_policy"]["scheduler_config"]["max_num_seqs"] = 2048
+        other["requested_policy"]["scheduler_config"]["max_num_seqs"] = 2048
+    elif key == "hardware_sha256":
+        worker["devices"][0]["uuid"] = "GPU-different"
+        inventory = sorted(
+            [
+                {"uuid": d["uuid"], "total_memory": d["total_memory"]}
+                for d in worker["devices"]
+            ],
+            key=lambda d: d["uuid"],
+        )
+        other["contract"][key] = sha256(
+            json.dumps(inventory, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    second = save(tmp_path, other, "two.json")
+    assert report.summarize_parallel(second)["status"] == "complete"
+    result = report.compare_parallel([first, second])
     assert result["status"] == "ineligible"
     assert len(result["rows"]) == 2
 

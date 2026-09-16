@@ -160,6 +160,32 @@ class HangingGPU(FakeGPU):
         return super().generate(prompts)
 
 
+class ShortOutputGPU(FakeGPU):
+    def generate(self, prompts: Any) -> list[Any]:
+        outputs = super().generate(prompts)
+        return outputs[:-1] if self.rank == 0 else outputs
+
+
+class WrongIdentityGPU(FakeGPU):
+    def generate(self, prompts: Any) -> list[Any]:
+        outputs = super().generate(prompts)
+        if self.rank == 0:
+            outputs[0].prompt_token_ids = [-1]
+        return outputs
+
+
+class PostGenerationMemoryFailureGPU(FakeGPU):
+    def generate(self, prompts: Any) -> list[Any]:
+        outputs = super().generate(prompts)
+        self.generated = True
+        return outputs
+
+    def memory(self) -> list[dict[str, Any]]:
+        if self.rank == 0 and getattr(self, "generated", False):
+            raise RuntimeError("private post-generation memory failure")
+        return super().memory()
+
+
 @pytest.fixture
 def config(tmp_path: Path) -> Any:
     from flexmoe.datasets.sharegpt import PromptRecord, write_jsonl_zst
@@ -250,6 +276,46 @@ def test_global_budget_divisibility(config: Any) -> None:
 
     with pytest.raises(ValueError):
         replace(config, max_num_seqs=1023)
+
+
+@pytest.mark.parametrize(
+    "backend,request_count,tokens,output_validation",
+    [
+        (ShortOutputGPU, 2, 20, "failed"),
+        (WrongIdentityGPU, 3, 30, "failed"),
+        (PostGenerationMemoryFailureGPU, 3, 30, "complete"),
+    ],
+)
+def test_failed_round_retains_counts_before_validation_or_telemetry(
+    config: Any,
+    tmp_path: Path,
+    backend: Any,
+    request_count: int,
+    tokens: int,
+    output_validation: str,
+) -> None:
+    from flexmoe.analysis.parallel_report import summarize_parallel
+
+    run = tmp_path / "run"
+    result = runner.run_parallel(
+        config, project_root=Path.cwd(), run_dir=run, backend_factory=backend
+    )
+    assert result["status"] == "failed"
+    rejected = result["incomplete_round"]
+    assert rejected["status"] == "incomplete"
+    assert rejected["iteration"] == 0
+    assert rejected["elapsed_s"] > 0
+    assert rejected["tokens_s"] is None
+    partial = json.loads((run / "private/dp-0/round-0.json").read_text())
+    assert partial["status"] in ("failed", "incomplete")
+    assert partial["request_count"] == request_count
+    assert partial["generated_tokens"] == tokens
+    assert partial["output_counts"] == [10] * request_count
+    assert partial["validation"]["outputs"] == output_validation
+    assert partial["memory"] == []
+    public = summarize_parallel(run)
+    assert public["status"] == "failed"
+    assert public["median_tokens_s"] is None
 
 
 @pytest.mark.parametrize(

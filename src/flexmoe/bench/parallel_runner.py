@@ -329,42 +329,71 @@ def _worker(
             connection.send(("generated", rank))
             if connection.recv() != "collect":
                 raise ValueError("invalid collection command")
-            counts, hashes, latencies = [], [], []
-            if len(outputs) != len(prompts):
-                raise ValueError("missing request output")
-            for prompt, output in zip(prompts, outputs):
-                if (
-                    list(output.prompt_token_ids) != list(prompt)
-                    or len(output.outputs) != 1
-                ):
-                    raise ValueError("request output identity differs")
-                tokens = list(output.outputs[0].token_ids)
-                counts.append(len(tokens))
-                hashes.append(digest_json(tokens))
-                metrics = getattr(output, "metrics", None)
-                arrival, finished = (
-                    getattr(metrics, "arrival_time", None),
-                    getattr(metrics, "finished_time", None),
-                )
-                if type(arrival) in (int, float) and type(finished) in (int, float):
-                    duration = float(cast(float, finished)) - float(cast(float, arrival))
-                    if math.isfinite(duration) and duration >= 0:
-                        latencies.append(duration)
-            row = {
+            counts: list[int] = []
+            hashes: list[str] = []
+            latencies: list[float] = []
+            identities, completions = [], []
+            row: dict[str, Any] = {
                 "dp_rank": rank,
                 "indices": indices,
-                "status": "complete",
-                "request_count": len(counts),
+                "status": "incomplete",
+                "request_count": len(outputs),
                 "output_counts": counts,
-                "generated_tokens": sum(counts),
+                "generated_tokens": 0,
                 "output_hashes": hashes,
                 "latencies_s": latencies,
-                "memory": backend.memory(),
+                "memory": [],
+                "validation": {"outputs": "pending", "memory": "pending"},
             }
-            atomic_json(private / f"round-{iteration}.json", row)
-            if any(count != config.output_length for count in counts):
-                raise ValueError("fixed output length differs")
+            round_path = private / f"round-{iteration}.json"
+            # Preserve the available prefix even if an unexpected output shape
+            # prevents collecting the remaining numeric evidence.
+            try:
+                for index, output in enumerate(outputs):
+                    tokens = [
+                        token
+                        for completion in output.outputs
+                        for token in completion.token_ids
+                    ]
+                    counts.append(len(tokens))
+                    hashes.append(digest_json(tokens))
+                    completions.append(len(output.outputs))
+                    identities.append(
+                        index < len(prompts)
+                        and list(output.prompt_token_ids) == list(prompts[index])
+                    )
+                    metrics = getattr(output, "metrics", None)
+                    arrival, finished = (
+                        getattr(metrics, "arrival_time", None),
+                        getattr(metrics, "finished_time", None),
+                    )
+                    if type(arrival) in (int, float) and type(finished) in (int, float):
+                        duration = float(cast(float, finished)) - float(
+                            cast(float, arrival)
+                        )
+                        if math.isfinite(duration) and duration >= 0:
+                            latencies.append(duration)
+            finally:
+                row["generated_tokens"] = sum(counts)
+                atomic_json(round_path, row)
+            valid_outputs = (
+                len(outputs) == len(prompts)
+                and all(identities)
+                and all(count == 1 for count in completions)
+                and all(count == config.output_length for count in counts)
+            )
+            row["validation"]["outputs"] = "complete" if valid_outputs else "failed"
+            row["status"] = "incomplete" if valid_outputs else "failed"
+            atomic_json(round_path, row)
+            if not valid_outputs:
+                raise ValueError("request output identity or fixed count differs")
+            # Counts and their validation state are durable before this RPC.
+            row["memory"] = backend.memory()
+            atomic_json(round_path, row)
             validate_memory(row["memory"], CONFIGS[config.config][0])
+            row["validation"]["memory"] = "complete"
+            row["status"] = "complete"
+            atomic_json(round_path, row)
             connection.send(("collected", row))
         connection.recv()  # Keep every DP engine alive until all ranks finish.
     except BaseException:  # noqa: BLE001 -- child failures must wake parent and preserve private evidence
@@ -560,6 +589,16 @@ def run_parallel(
                 connection.send("generate")
             _receive(connections, "generated", deadline)
             elapsed = time.perf_counter() - start
+            # Generation finished, but telemetry/count checks may still fail.
+            # Preserve its measured time without assigning qualified throughput.
+            summary["incomplete_round"] = {
+                "iteration": iteration,
+                "status": "incomplete",
+                "elapsed_s": elapsed,
+                "timing_scope": "global_wallclock",
+                "tokens_s": None,
+            }
+            atomic_json(run_dir / "summary.json", summary)
             for connection in connections:
                 connection.send("collect")
             rows = sorted(
@@ -584,6 +623,7 @@ def run_parallel(
                 summary["repetitions"].append(result)
             else:
                 summary["warmup"] = result
+            summary.pop("incomplete_round")
             atomic_json(run_dir / "summary.json", summary)
         summary["status"] = "complete"
     except BaseException as error:
