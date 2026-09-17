@@ -1,0 +1,516 @@
+{
+  "decisions": {
+    "kv": [
+      16407527424,
+      32815054848
+    ],
+    "kv_policy": "half-and-native-observed-capacity; aligned; no-full-freed-space-exploitation",
+    "representatives": [
+      1,
+      100,
+      1000
+    ]
+  },
+  "deployment_gain_proven": false,
+  "diagnostic_only": true,
+  "ep_offload": "unsupported",
+  "formal_offload_gain": false,
+  "parallel_comparison": {
+    "deployment_gain_proven": false,
+    "diagnostic_only": true,
+    "formal_offload_gain": false,
+    "rows": [
+      {
+        "config": "tp4",
+        "deployment_gain_proven": false,
+        "diagnostic_only": true,
+        "failure_category": null,
+        "formal_offload_gain": false,
+        "median_tokens_s": 8082.893540944995,
+        "memory": [
+          {
+            "dp_rank": 0,
+            "free_gpu_bytes": 6129975296,
+            "kv_cache_allocated_bytes": 32815054848,
+            "kv_cache_declared_bytes": 32815054848,
+            "model_memory_bytes": 39959379968,
+            "num_gpu_blocks": 9818,
+            "rank": 0,
+            "torch_allocated_bytes": 72918710272,
+            "torch_peak_allocated_bytes": 75111061504,
+            "torch_peak_reserved_bytes": 75759616000,
+            "torch_reserved_bytes": 75759616000,
+            "total_gpu_bytes": 85017493504
+          },
+          {
+            "dp_rank": 0,
+            "free_gpu_bytes": 6129975296,
+            "kv_cache_allocated_bytes": 32815054848,
+            "kv_cache_declared_bytes": 32815054848,
+            "model_memory_bytes": 39959379968,
+            "num_gpu_blocks": 9818,
+            "rank": 1,
+            "torch_allocated_bytes": 72918710272,
+            "torch_peak_allocated_bytes": 75111061504,
+            "torch_peak_reserved_bytes": 75759616000,
+            "torch_reserved_bytes": 75759616000,
+            "total_gpu_bytes": 85017493504
+          },
+          {
+            "dp_rank": 0,
+            "free_gpu_bytes": 6129975296,
+            "kv_cache_allocated_bytes": 32815054848,
+            "kv_cache_declared_bytes": 32815054848,
+            "model_memory_bytes": 39959379968,
+            "num_gpu_blocks": 9818,
+            "rank": 2,
+            "torch_allocated_bytes": 72918710272,
+            "torch_peak_allocated_bytes": 75111061504,
+            "torch_peak_reserved_bytes": 75759616000,
+            "torch_reserved_bytes": 75759616000,
+            "total_gpu_bytes": 85017493504
+          },
+          {
+            "dp_rank": 0,
+            "free_gpu_bytes": 6129975296,
+            "kv_cache_allocated_bytes": 32815054848,
+            "kv_cache_declared_bytes": 32815054848,
+            "model_memory_bytes": 39959379968,
+            "num_gpu_blocks": 9818,
+            "rank": 3,
+            "torch_allocated_bytes": 72918710272,
+            "torch_peak_allocated_bytes": 75111061504,
+            "torch_peak_reserved_bytes": 75759616000,
+            "torch_reserved_bytes": 75759616000,
+            "total_gpu_bytes": 85017493504
+          }
+        ],
+        "mode": "full-resident-native",
+        "output_variation_observed": true,
+        "parallelism": {
+          "dp": 1,
+          "ep_enabled": false,
+          "physical_gpus": 4,
+          "tp": 4
+        },
+        "repetitions": [
+          {
+            "elapsed_s": 65.54602669994347,
+            "generated_tokens": 524288,
+            "iteration": 1,
+            "latency": {
+              "availability": "unavailable",
+              "count": 0,
+              "p50_s": null,
+              "p95_s": null,
+              "scope": "arrival-to-finished-offline"
+            },
+            "tokens_s": 7998.776224836405
+          },
+          {
+            "elapsed_s": 64.32847691094503,
+            "generated_tokens": 524288,
+            "iteration": 2,
+            "latency": {
+              "availability": "unavailable",
+              "count": 0,
+              "p50_s": null,
+              "p95_s": null,
+              "scope": "arrival-to-finished-offline"
+            },
+            "tokens_s": 8150.1696476634
+          },
+          {
+            "elapsed_s": 64.8639002040727,
+            "generated_tokens": 524288,
+            "iteration": 3,
+            "latency": {
+              "availability": "unavailable",
+              "count": 0,
+              "p50_s": null,
+              "p95_s": null,
+              "scope": "arrival-to-finished-offline"
+            },
+            "tokens_s": 8082.893540944995
+          }
+        ],
+        "status": "complete",
+        "timing_scope": "global_wallclock",
+        "workload": {
+          "batch_size": 1024,
+          "context_length": 1024,
+          "gpu_memory_utilization": 0.9,
+          "max_num_batched_tokens": 8192,
+          "max_num_seqs": 1024,
+          "output_length": 512,
+          "seed": 20260912,
+          "warmups": 1
+        }
+      },
+      {
+        "config": "ep4-dp4",
+        "deployment_gain_proven": false,
+        "diagnostic_only": true,
+        "failure_category": "worker-failed",
+        "formal_offload_gain": false,
+        "median_tokens_s": null,
+        "memory": [
+          {
+            "dp_rank": 0,
+            "free_gpu_bytes": 4854906880,
+            "kv_cache_allocated_bytes": 30976770048,
+            "kv_cache_declared_bytes": 30976770048,
+            "model_memory_bytes": 43419451392,
+            "num_gpu_blocks": 2317,
+            "rank": 0,
+            "torch_allocated_bytes": 74507765760,
+            "torch_peak_allocated_bytes": 75055460352,
+            "torch_peak_reserved_bytes": 75478597632,
+            "torch_reserved_bytes": 75344379904,
+            "total_gpu_bytes": 85017493504
+          },
+          {
+            "dp_rank": 1,
+            "free_gpu_bytes": 4854906880,
+            "kv_cache_allocated_bytes": 30976770048,
+            "kv_cache_declared_bytes": 30976770048,
+            "model_memory_bytes": 43419451392,
+            "num_gpu_blocks": 2317,
+            "rank": 0,
+            "torch_allocated_bytes": 74507765760,
+            "torch_peak_allocated_bytes": 75055460352,
+            "torch_peak_reserved_bytes": 75478597632,
+            "torch_reserved_bytes": 75344379904,
+            "total_gpu_bytes": 85017493504
+          },
+          {
+            "dp_rank": 2,
+            "free_gpu_bytes": 4854841344,
+            "kv_cache_allocated_bytes": 30976770048,
+            "kv_cache_declared_bytes": 30976770048,
+            "model_memory_bytes": 43419451392,
+            "num_gpu_blocks": 2317,
+            "rank": 0,
+            "torch_allocated_bytes": 74507765760,
+            "torch_peak_allocated_bytes": 75055460352,
+            "torch_peak_reserved_bytes": 75478597632,
+            "torch_reserved_bytes": 75344379904,
+            "total_gpu_bytes": 85017493504
+          },
+          {
+            "dp_rank": 3,
+            "free_gpu_bytes": 4854906880,
+            "kv_cache_allocated_bytes": 30976770048,
+            "kv_cache_declared_bytes": 30976770048,
+            "model_memory_bytes": 43419451392,
+            "num_gpu_blocks": 2317,
+            "rank": 0,
+            "torch_allocated_bytes": 74507765760,
+            "torch_peak_allocated_bytes": 75055460352,
+            "torch_peak_reserved_bytes": 75478597632,
+            "torch_reserved_bytes": 75344379904,
+            "total_gpu_bytes": 85017493504
+          }
+        ],
+        "mode": "full-resident-native",
+        "output_variation_observed": null,
+        "repetitions": [],
+        "status": "failed",
+        "timing_scope": "global_wallclock",
+        "workload": {
+          "batch_size": 1024,
+          "context_length": 1024,
+          "gpu_memory_utilization": 0.9,
+          "max_num_batched_tokens": 8192,
+          "max_num_seqs": 1024,
+          "output_length": 512,
+          "seed": 20260912,
+          "warmups": 1
+        }
+      },
+      {
+        "config": "ep4-dp2",
+        "deployment_gain_proven": false,
+        "diagnostic_only": true,
+        "failure_category": "worker-failed",
+        "formal_offload_gain": false,
+        "median_tokens_s": null,
+        "memory": [
+          {
+            "dp_rank": 0,
+            "free_gpu_bytes": 4349493248,
+            "kv_cache_allocated_bytes": 31758876672,
+            "kv_cache_declared_bytes": 31758876672,
+            "model_memory_bytes": 41104064512,
+            "num_gpu_blocks": 4751,
+            "rank": 0,
+            "torch_allocated_bytes": 72989421568,
+            "torch_peak_allocated_bytes": 74084810752,
+            "torch_peak_reserved_bytes": 74604085248,
+            "torch_reserved_bytes": 74604085248,
+            "total_gpu_bytes": 85017493504
+          },
+          {
+            "dp_rank": 0,
+            "free_gpu_bytes": 4349493248,
+            "kv_cache_allocated_bytes": 31758876672,
+            "kv_cache_declared_bytes": 31758876672,
+            "model_memory_bytes": 41104064512,
+            "num_gpu_blocks": 4751,
+            "rank": 1,
+            "torch_allocated_bytes": 72989421568,
+            "torch_peak_allocated_bytes": 74084810752,
+            "torch_peak_reserved_bytes": 74604085248,
+            "torch_reserved_bytes": 74604085248,
+            "total_gpu_bytes": 85017493504
+          },
+          {
+            "dp_rank": 1,
+            "free_gpu_bytes": 4349493248,
+            "kv_cache_allocated_bytes": 31758876672,
+            "kv_cache_declared_bytes": 31758876672,
+            "model_memory_bytes": 41104064512,
+            "num_gpu_blocks": 4751,
+            "rank": 0,
+            "torch_allocated_bytes": 72989421568,
+            "torch_peak_allocated_bytes": 74084810752,
+            "torch_peak_reserved_bytes": 74604085248,
+            "torch_reserved_bytes": 74604085248,
+            "total_gpu_bytes": 85017493504
+          },
+          {
+            "dp_rank": 1,
+            "free_gpu_bytes": 4349493248,
+            "kv_cache_allocated_bytes": 31758876672,
+            "kv_cache_declared_bytes": 31758876672,
+            "model_memory_bytes": 41104064512,
+            "num_gpu_blocks": 4751,
+            "rank": 1,
+            "torch_allocated_bytes": 72989421568,
+            "torch_peak_allocated_bytes": 74084810752,
+            "torch_peak_reserved_bytes": 74604085248,
+            "torch_reserved_bytes": 74604085248,
+            "total_gpu_bytes": 85017493504
+          }
+        ],
+        "mode": "full-resident-native",
+        "output_variation_observed": null,
+        "repetitions": [],
+        "status": "failed",
+        "timing_scope": "global_wallclock",
+        "workload": {
+          "batch_size": 1024,
+          "context_length": 1024,
+          "gpu_memory_utilization": 0.9,
+          "max_num_batched_tokens": 8192,
+          "max_num_seqs": 1024,
+          "output_length": 512,
+          "seed": 20260912,
+          "warmups": 1
+        }
+      }
+    ],
+    "schema_version": 1,
+    "status": "ineligible",
+    "timing_scope": "global_wallclock"
+  },
+  "points": [
+    {
+      "attempts": 1,
+      "point": "build",
+      "reason": null,
+      "status": "complete"
+    },
+    {
+      "attempts": 1,
+      "point": "corpus",
+      "reason": null,
+      "status": "complete"
+    },
+    {
+      "attempts": 1,
+      "point": "parallel-tp4",
+      "reason": null,
+      "status": "complete"
+    },
+    {
+      "attempts": 1,
+      "point": "parallel-ep4-dp4",
+      "reason": "child-failed",
+      "status": "failed"
+    },
+    {
+      "attempts": 1,
+      "point": "parallel-ep4-dp2",
+      "reason": "child-failed",
+      "status": "failed"
+    },
+    {
+      "attempts": 1,
+      "point": "cal-1024",
+      "reason": null,
+      "status": "complete"
+    },
+    {
+      "attempts": 1,
+      "point": "cal-4096",
+      "reason": null,
+      "status": "complete"
+    },
+    {
+      "attempts": 1,
+      "point": "native",
+      "reason": null,
+      "status": "complete"
+    },
+    {
+      "attempts": 1,
+      "point": "coverage-1024-1",
+      "reason": null,
+      "status": "complete"
+    },
+    {
+      "attempts": 1,
+      "point": "coverage-1024-16",
+      "reason": null,
+      "status": "complete"
+    },
+    {
+      "attempts": 1,
+      "point": "coverage-1024-50",
+      "reason": null,
+      "status": "complete"
+    },
+    {
+      "attempts": 1,
+      "point": "coverage-1024-100",
+      "reason": null,
+      "status": "complete"
+    },
+    {
+      "attempts": 1,
+      "point": "coverage-1024-200",
+      "reason": null,
+      "status": "complete"
+    },
+    {
+      "attempts": 1,
+      "point": "coverage-1024-500",
+      "reason": null,
+      "status": "complete"
+    },
+    {
+      "attempts": 1,
+      "point": "coverage-1024-1000",
+      "reason": null,
+      "status": "complete"
+    },
+    {
+      "attempts": 1,
+      "point": "coverage-4096-1",
+      "reason": null,
+      "status": "complete"
+    },
+    {
+      "attempts": 1,
+      "point": "coverage-4096-100",
+      "reason": null,
+      "status": "complete"
+    },
+    {
+      "attempts": 1,
+      "point": "coverage-4096-1000",
+      "reason": "invalid-evidence",
+      "status": "failed"
+    },
+    {
+      "attempts": 1,
+      "point": "offload-1-0",
+      "reason": null,
+      "status": "complete"
+    },
+    {
+      "attempts": 1,
+      "point": "offload-1-1",
+      "reason": null,
+      "status": "complete"
+    },
+    {
+      "attempts": 1,
+      "point": "offload-1-2",
+      "reason": null,
+      "status": "complete"
+    },
+    {
+      "attempts": 1,
+      "point": "offload-100-0",
+      "reason": null,
+      "status": "complete"
+    },
+    {
+      "attempts": 1,
+      "point": "offload-100-1",
+      "reason": null,
+      "status": "complete"
+    },
+    {
+      "attempts": 1,
+      "point": "offload-100-2",
+      "reason": null,
+      "status": "complete"
+    },
+    {
+      "attempts": 1,
+      "point": "offload-1000-0",
+      "reason": "invalid-evidence",
+      "status": "failed"
+    },
+    {
+      "attempts": 1,
+      "point": "offload-1000-1",
+      "reason": "invalid-evidence",
+      "status": "failed"
+    },
+    {
+      "attempts": 1,
+      "point": "offload-1000-2",
+      "reason": "invalid-evidence",
+      "status": "failed"
+    },
+    {
+      "attempts": 1,
+      "point": "kv-a",
+      "reason": null,
+      "status": "complete"
+    },
+    {
+      "attempts": 1,
+      "point": "kv-b",
+      "reason": null,
+      "status": "complete"
+    },
+    {
+      "attempts": 1,
+      "point": "kv-c",
+      "reason": null,
+      "status": "complete"
+    },
+    {
+      "attempts": 1,
+      "point": "overhead-0",
+      "reason": null,
+      "status": "complete"
+    },
+    {
+      "attempts": 1,
+      "point": "overhead-1",
+      "reason": null,
+      "status": "complete"
+    }
+  ],
+  "schema_version": 1,
+  "status": "partial",
+  "tp4_abc": {
+    "status": "unavailable"
+  }
+}

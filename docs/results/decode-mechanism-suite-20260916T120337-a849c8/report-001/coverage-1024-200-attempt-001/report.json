@@ -1,0 +1,27 @@
+{
+  "files": [
+    "batch-coverage.svg",
+    "report.csv",
+    "report.json",
+    "report.md"
+  ],
+  "status": "exported",
+  "validation": {
+    "elapsed_median_s": null,
+    "eligible_repetitions": 0,
+    "output_variation": {
+      "producer_reported_stable": false,
+      "repetitions": 3,
+      "scope": "whole-output repeat variation is audit only; fixed counts, valid hashes and smoke remain required",
+      "status": "varied",
+      "unique_outputs": 3,
+      "valid_output_hashes": 3
+    },
+    "reasons": [
+      "instrumented-timing"
+    ],
+    "status": "ineligible",
+    "throughput_median_tokens_s": null,
+    "timing_eligible": false
+  }
+}

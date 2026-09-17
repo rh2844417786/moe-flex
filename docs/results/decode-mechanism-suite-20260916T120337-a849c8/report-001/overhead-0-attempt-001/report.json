@@ -1,0 +1,25 @@
+{
+  "files": [
+    "kv-throughput.svg",
+    "report.csv",
+    "report.json",
+    "report.md"
+  ],
+  "status": "exported",
+  "validation": {
+    "elapsed_median_s": 108.51447235106025,
+    "eligible_repetitions": 3,
+    "output_variation": {
+      "producer_reported_stable": false,
+      "repetitions": 3,
+      "scope": "whole-output repeat variation is audit only; fixed counts, valid hashes and smoke remain required",
+      "status": "varied",
+      "unique_outputs": 3,
+      "valid_output_hashes": 3
+    },
+    "reasons": [],
+    "status": "eligible",
+    "throughput_median_tokens_s": 4831.503011910258,
+    "timing_eligible": true
+  }
+}
