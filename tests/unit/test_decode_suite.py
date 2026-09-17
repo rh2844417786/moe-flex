@@ -644,6 +644,9 @@ def test_wrapper_fresh_canonical_outputs_and_dirty_scope(tmp_path):
     results = tmp_path / "docs/results/decode-mechanism-test"
     results.mkdir(parents=True)
     (results / "report.json").write_text("{}")
+    decision = tmp_path / "docs/results/decode-decision-test"
+    decision.mkdir(parents=True)
+    (decision / "report.md").write_text("numeric result")
     # Only the generated prefix can be ignored; any source edit blocks another run.
     (tmp_path / ".gitignore").write_text("runs/\noutside/\n")
     subprocess.run(["git", "-C", str(tmp_path), "add", ".gitignore"], check=True)

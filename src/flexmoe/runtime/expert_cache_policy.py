@@ -139,6 +139,153 @@ class ExpertCachePolicy:
     def resident_ids(self) -> tuple[tuple[int, ...], ...]:
         return self._resident_ids
 
+    def replay_snapshot(self) -> dict[str, object]:
+        """Bounded metadata before the first captured layer, never weight bytes."""
+        return {
+            "total_layers": self._total_layers,
+            "num_experts": self._num_experts,
+            "resident_ratio": self._resident_ratio,
+            "cache_slots": self._cache_slots,
+            "decay_interval": self._decay_interval,
+            "policy": self._policy,
+            "scores": [list(row) for row in self._scores],
+            "scale": self._scale,
+            "forward_counts": list(self._forward_counts),
+            "decay_events": self._decay_events,
+            "resident_ids": [list(row) for row in self._resident_ids],
+            "slots": [list(key) if key is not None else None for key in self._slots],
+            "access_by_slot": [
+                self._access.get(key) if key is not None else None
+                for key in self._slots
+            ],
+            "access_serial": self._access_serial,
+        }
+
+    @classmethod
+    def from_replay_snapshot(
+        cls, raw: dict[str, object], *, policy_override: str | None = None
+    ) -> ExpertCachePolicy:
+        """Recreate the exact production state (or a conditional LRU control)."""
+        try:
+            layers = _positive_int(raw["total_layers"], "total_layers")
+            experts = _positive_int(raw["num_experts"], "num_experts")
+            capacity = _bounded_cache_slots(
+                raw["cache_slots"], key_space=layers * experts
+            )
+            original = raw["policy"]
+            if original not in _POLICIES or policy_override not in (None, *_POLICIES):
+                raise ValueError("invalid policy")
+            scores = _counts(raw["scores"], total_layers=layers, num_experts=experts)  # type: ignore[arg-type]
+            result = cls(
+                layers,
+                experts,
+                _ratio(raw["resident_ratio"]),
+                capacity,
+                decay_interval=_positive_int(raw["decay_interval"], "decay_interval"),
+                policy=policy_override or original,
+                initial_counts=scores,
+            )
+            residents, slots, accesses = (
+                raw[key] for key in ("resident_ids", "slots", "access_by_slot")
+            )
+            if (
+                not isinstance(residents, list)
+                or len(residents) != layers
+                or not isinstance(slots, list)
+                or not isinstance(accesses, list)
+                or len(slots) != capacity
+                or len(accesses) != capacity
+            ):
+                raise ValueError("snapshot shape differs")
+            expected_residents = math.floor(experts * result._resident_ratio)
+            parsed_residents = []
+            for row in residents:
+                if (
+                    not isinstance(row, list)
+                    or len(row) != expected_residents
+                    or any(type(v) is not int or not 0 <= v < experts for v in row)
+                    or len(set(row)) != len(row)
+                ):
+                    raise ValueError("resident geometry differs")
+                parsed_residents.append(tuple(row))
+            result._resident_ids = tuple(parsed_residents)
+            result._resident_ranks = tuple(
+                {expert: rank for rank, expert in enumerate(row)}
+                for row in result._resident_ids
+            )
+            assigned: set[ExpertKey] = set()
+            result._slots = []
+            result._free_slots = []
+            for slot, key in enumerate(slots):
+                if key is None:
+                    if accesses[slot] is not None:
+                        raise ValueError("free slot has access history")
+                    result._slots.append(None)
+                    result._free_slots.append(slot)
+                    continue
+                if (
+                    not isinstance(key, list)
+                    or len(key) != 2
+                    or any(type(x) is not int for x in key)
+                ):
+                    raise ValueError("invalid cache key")
+                layer, expert = key
+                if (
+                    not 0 <= layer < layers
+                    or not 0 <= expert < experts
+                    or expert in result._resident_ranks[layer]
+                    or (layer, expert) in assigned
+                ):
+                    raise ValueError("cached expert outside nonresident key space")
+                pair = (layer, expert)
+                assigned.add(pair)
+                result._slots.append(pair)
+                result._assignments[pair] = slot
+                result._versions[pair] = 0
+                if accesses[slot] is not None:
+                    if type(accesses[slot]) is not int or accesses[slot] < 0:
+                        raise ValueError("invalid access serial")
+                    result._access[pair] = accesses[slot]
+            heapq.heapify(result._free_slots)
+            scale = raw["scale"]
+            counts, decay = raw["forward_counts"], raw["decay_events"]
+            if (
+                not isinstance(scale, (int, float))
+                or not math.isfinite(scale)
+                or scale <= 0
+                or not isinstance(counts, list)
+                or len(counts) != layers
+                or any(type(x) is not int or x < 0 for x in counts)
+                or type(decay) is not int
+                or decay < 0
+            ):
+                raise ValueError("invalid decay clock")
+            result._scale = float(scale)
+            result._forward_counts = list(counts)
+            result._decay_events = decay
+            serial = raw["access_serial"]
+            if (
+                type(serial) is not int
+                or serial < 0
+                or any(value > serial for value in result._access.values())
+            ):
+                raise ValueError("invalid recency clock")
+            result._access_serial = serial
+            if result._policy == "lru" and original != "lru":
+                # The deployed LFU does not track recency. Replayed LRU starts
+                # with the SAME entries but a declared slot-order recency seed.
+                result._access = {
+                    key: slot + 1
+                    for slot, key in enumerate(result._slots)
+                    if key is not None
+                }
+                result._access_serial = capacity
+            if result._policy == "lru" and len(result._access) != len(assigned):
+                raise ValueError("LRU recency state incomplete")
+            return result
+        except (KeyError, IndexError, TypeError) as exc:
+            raise ValueError("malformed replay snapshot") from exc
+
     def _validate_layer(self, layer: int) -> None:
         if type(layer) is not int or not 0 <= layer < self._total_layers:
             raise IndexError("layer is outside policy geometry")
@@ -217,9 +364,7 @@ class ExpertCachePolicy:
         self._access[key] = self._access_serial
         self._versions[key] = self._versions.get(key, 0) + 1
         if self._heap_layer is not None:
-            heapq.heappush(
-                self._victim_heap, self._heap_entry(key, self._heap_layer)
-            )
+            heapq.heappush(self._victim_heap, self._heap_entry(key, self._heap_layer))
             self._compact_heap_if_needed()
 
     def _next_use_distance(self, current_layer: int, key_layer: int) -> int:
@@ -243,9 +388,7 @@ class ExpertCachePolicy:
         )
 
     def _prepare_heap(self, layer: int) -> None:
-        self._victim_heap = [
-            self._heap_entry(key, layer) for key in self._assignments
-        ]
+        self._victim_heap = [self._heap_entry(key, layer) for key in self._assignments]
         heapq.heapify(self._victim_heap)
         self._heap_layer = layer
         self._skipped_protected.clear()
@@ -267,9 +410,7 @@ class ExpertCachePolicy:
     def _victim(
         self, layer: int, protected: AbstractSet[ExpertKey]
     ) -> tuple[ExpertKey, float] | None:
-        if self._heap_layer != layer or not self._skipped_protected.issubset(
-            protected
-        ):
+        if self._heap_layer != layer or not self._skipped_protected.issubset(protected):
             self._prepare_heap(layer)
         while self._victim_heap:
             entry = heapq.heappop(self._victim_heap)
@@ -332,9 +473,7 @@ class ExpertCachePolicy:
         if self._policy == "lru":
             self._touch_lru(key)
         elif self._heap_layer is not None:
-            heapq.heappush(
-                self._victim_heap, self._heap_entry(key, self._heap_layer)
-            )
+            heapq.heappush(self._victim_heap, self._heap_entry(key, self._heap_layer))
 
     def reconfigure(self, resident_ratio: float, cache_slots: int) -> None:
         """Preserve heat while replacing residents and clearing assignments."""

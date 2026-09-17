@@ -23,6 +23,52 @@ def module():
     return importlib.import_module("flexmoe.bench.decode_mechanism_runner")
 
 
+def test_container_side_cache_replay_writes_all_rank_numeric_results(tmp_path):
+    from flexmoe.runtime.expert_cache_policy import ExpertCachePolicy
+
+    run = tmp_path / "point"
+    run.mkdir()
+    initial = ExpertCachePolicy(1, 4, 0.0, 1).replay_snapshot()
+    for repetition in range(3):
+        for rank in range(4):
+            path = run / f"decode-rep-{repetition:03d}-rank-{rank}.json.gz"
+            with gzip.open(path, "wt") as stream:
+                json.dump(
+                    {
+                        "artifact_kind": "decode-profile",
+                        "profile": True,
+                        "geometry": {"total_layers": 1, "expert_bytes": 10},
+                        "observation": {
+                            "coverage_status": "complete",
+                            "captured_steps": 64,
+                            "pool_profile": {
+                                "initial_policy_state": initial,
+                                "dropped_rows": 0,
+                                "rows": [
+                                    {
+                                        "step": step,
+                                        "layer": 0,
+                                        "actual_batch": 16,
+                                        "demand_ids": [1],
+                                        "unique_misses": int(step == 0),
+                                        "loaded_bytes": 10 if step == 0 else 0,
+                                        "status": "complete",
+                                    }
+                                    for step in range(64)
+                                ],
+                            },
+                        },
+                    },
+                    stream,
+                )
+    result = module().save_cache_replays(run, "committed-sha")
+    assert result["run_id"] == "point"
+    assert result["commit"] == "committed-sha"
+    assert len(result["rows"]) == 12
+    assert all(row["status"] == "baseline-reproduced" for row in result["rows"])
+    assert json.loads((run / "decode-cache-replay.json").read_text()) == result
+
+
 def config(tmp_path):
     cfg = supported_config(tmp_path)
     (cfg.model_path / "model.safetensors.index.json").write_text("{}")
@@ -387,10 +433,19 @@ def test_completed_generation_survives_observer_finalization_failure(
 
 def test_cli_passes_explicit_new_parameters_to_shared_runner(tmp_path, monkeypatch):
     got = []
+
+    def complete_fake_run(cfg, **kwargs):
+        got.append((cfg, kwargs))
+        folder = kwargs["run_dir"]
+        folder.mkdir()
+        (folder / "summary.json").write_text(
+            json.dumps({"status": "complete", "contract": {"commit": "fixture"}})
+        )
+
     monkeypatch.setattr(
         module().shared,
         "run_benchmark",
-        lambda cfg, **kwargs: got.append((cfg, kwargs)),
+        complete_fake_run,
     )
     module().main(
         [
@@ -430,6 +485,10 @@ def test_cli_passes_explicit_new_parameters_to_shared_runner(tmp_path, monkeypat
         backend.profile
         and backend.resident_ratio == 0.9
         and backend.cache_slots == 2048
+    )
+    assert (
+        json.loads((tmp_path / "cli/decode-cache-replay.json").read_text())["status"]
+        == "incomplete-evidence"
     )
 
 

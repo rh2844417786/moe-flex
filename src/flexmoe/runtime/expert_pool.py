@@ -118,8 +118,12 @@ class PoolProfileObserver:
     """Bounded per-forward observations. CUDA events are read only when ready."""
 
     def __init__(
-        self, context: Callable[[int], dict[str, Any] | None], *, capacity: int,
-        device: str | torch.device, event_factory: Callable[[], Any] | None = None,
+        self,
+        context: Callable[[int], dict[str, Any] | None],
+        *,
+        capacity: int,
+        device: str | torch.device,
+        event_factory: Callable[[], Any] | None = None,
     ) -> None:
         if type(capacity) is not int or capacity <= 0:
             raise ValueError("pool profile capacity must be positive")
@@ -129,6 +133,7 @@ class PoolProfileObserver:
         self.rows: list[dict[str, Any]] = []
         self.events: list[list[Any]] = []
         self.dropped = 0
+        self.initial_policy_state: dict[str, object] | None = None
 
     def begin(self, layer: int) -> int | None:
         context = self.context(layer)
@@ -137,10 +142,17 @@ class PoolProfileObserver:
         if len(self.rows) >= self.capacity:
             self.dropped += 1
             return None
-        self.rows.append({**context, "layer": layer, "status": "failed",
-                          "loaded_bytes": 0, "prefetch_status": "not-applicable",
-                          "transfer_schedule": "serialized-on-compute-stream",
-                          "cpu_timing": {"status": "unavailable"}})
+        self.rows.append(
+            {
+                **context,
+                "layer": layer,
+                "status": "failed",
+                "loaded_bytes": 0,
+                "prefetch_status": "not-applicable",
+                "transfer_schedule": "serialized-on-compute-stream",
+                "cpu_timing": {"status": "unavailable"},
+            }
+        )
         self.events.append([])
         return len(self.rows) - 1
 
@@ -157,19 +169,31 @@ class PoolProfileObserver:
     def snapshot(self) -> dict[str, Any]:
         rows = []
         for raw, events in zip(self.rows, self.events, strict=True):
-            timing: dict[str, Any] = {"status": "unavailable",
-                                      "reason": "events-incomplete-or-not-ready"}
+            timing: dict[str, Any] = {
+                "status": "unavailable",
+                "reason": "events-incomplete-or-not-ready",
+            }
             if len(events) == 5 and events[-1].query():
                 timing = {"status": "measured"}
-                for key, start, end in (("load_s", 0, 2), ("payload_s", 0, 1),
-                                        ("metadata_s", 1, 2), ("compute_s", 2, 3),
-                                        ("promotion_s", 3, 4), ("span_s", 0, 4)):
+                for key, start, end in (
+                    ("load_s", 0, 2),
+                    ("payload_s", 0, 1),
+                    ("metadata_s", 1, 2),
+                    ("compute_s", 2, 3),
+                    ("promotion_s", 3, 4),
+                    ("span_s", 0, 4),
+                ):
                     timing[key] = events[start].elapsed_time(events[end]) / 1000
             rows.append({**raw, "cuda_timing": timing})
         return {
-            "rows": rows, "capacity": self.capacity, "dropped_rows": self.dropped,
+            "rows": rows,
+            "capacity": self.capacity,
+            "dropped_rows": self.dropped,
+            "initial_policy_state": self.initial_policy_state,
             "timing_scope": "instrumented-per-rank-layer; serialized local transfer service, not TP-global net loss; CPU waits may overlap CUDA; do not sum CPU/GPU or rank times",
-            "unmeasured_rows": sum(row["cuda_timing"]["status"] != "measured" for row in rows),
+            "unmeasured_rows": sum(
+                row["cuda_timing"]["status"] != "measured" for row in rows
+            ),
             "history_scope": "engine-lifecycle-including-constructor-prefill-warmup; not-reset-at-capture",
         }
 
@@ -240,7 +264,9 @@ class ExpertPool:
         self._active = False
         self._failed = False
         self.profile_observer: PoolProfileObserver | None = None
-        self._loaded_history: set[tuple[int, int]] | None = set() if track_load_history else None
+        self._loaded_history: set[tuple[int, int]] | None = (
+            set() if track_load_history else None
+        )
         self._h2d_bytes = 0
         self._copy_launches = 0
         self._startup_bytes = 0
@@ -310,10 +336,14 @@ class ExpertPool:
             self._active = True
             if observer is not None:
                 if self._loaded_history is None:
-                    raise RuntimeError("pool lifecycle tracking was not enabled at construction")
+                    raise RuntimeError(
+                        "pool lifecycle tracking was not enabled at construction"
+                    )
                 token = observer.begin(layer)
                 if token is not None:
                     cpu_before = dict(self._timing)
+                    if token == 0:
+                        observer.initial_policy_state = self.policy.replay_snapshot()
             resident_before = self._resident_hits
             if (
                 topk_ids.ndim != 2
@@ -325,6 +355,8 @@ class ExpertPool:
             # Copy the native IDs, not weights, and deduplicate on CPU. This
             # includes the wait for upstream routing/previous GPU dependencies.
             ids = sorted(set(topk_ids.detach().to(device="cpu").flatten().tolist()))
+            if token is not None and observer is not None:
+                observer.rows[token]["demand_ids"] = ids
             self._timing["route_d2h_s"] += perf_counter() - t
             t = perf_counter()
             self.policy.observe(layer, ids)
@@ -359,12 +391,19 @@ class ExpertPool:
                 mapping[expert] = self.ingress_start + i
             self._timing["policy_cpu_s"] += perf_counter() - t
             if token is not None and observer is not None:
-                first = sum((layer, expert) not in self._loaded_history for expert in misses)  # type: ignore[operator]
+                first = sum(
+                    (layer, expert) not in self._loaded_history for expert in misses
+                )  # type: ignore[operator]
                 resident_hits = self._resident_hits - resident_before
                 observer.rows[token].update(
-                    resident_hits=resident_hits, cache_hits=len(ids) - len(misses) - resident_hits,
-                    unique_misses=len(misses), first_loads=first, reloads=len(misses) - first,
-                    evictions=evictions, bypasses=len(bypasses), unique_demands=len(ids),
+                    resident_hits=resident_hits,
+                    cache_hits=len(ids) - len(misses) - resident_hits,
+                    unique_misses=len(misses),
+                    first_loads=first,
+                    reloads=len(misses) - first,
+                    evictions=evictions,
+                    bypasses=len(bypasses),
+                    unique_demands=len(ids),
                 )
             self.backend.begin()
             t = perf_counter()
@@ -406,7 +445,9 @@ class ExpertPool:
             self.backend.uploaded()
             self.backend.mark(1)
             if token is not None and observer is not None:
-                observer.rows[token]["metadata_bytes"] = self.num_experts * 4 + count * 8
+                observer.rows[token]["metadata_bytes"] = (
+                    self.num_experts * 4 + count * 8
+                )
                 observer.mark(token)
             self._timing["h2d_enqueue_s"] += perf_counter() - t
             t = perf_counter()
@@ -428,7 +469,9 @@ class ExpertPool:
             self.backend.mark(3)
             if token is not None and observer is not None:
                 observer.mark(token)
-                observer.rows[token].update(status="complete", promotion_bytes=count * self.expert_bytes)
+                observer.rows[token].update(
+                    status="complete", promotion_bytes=count * self.expert_bytes
+                )
             self.backend.end()
             self._forwards[layer] += 1
             self._unique_demands += len(ids)
@@ -445,7 +488,10 @@ class ExpertPool:
             if token is not None and observer is not None:
                 observer.rows[token]["cpu_timing"] = {
                     "status": "measured",
-                    **{key: value - cpu_before[key] for key, value in self._timing.items()},
+                    **{
+                        key: value - cpu_before[key]
+                        for key, value in self._timing.items()
+                    },
                 }
             self._active = False
             self._lock.release()

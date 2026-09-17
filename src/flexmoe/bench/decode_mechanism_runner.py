@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import platform
@@ -538,6 +539,58 @@ class DecodeMechanismBackend(ExpertBackend):
                 shared.atomic_json(self.run_dir / "summary.json", self.summary)
 
 
+def save_cache_replays(run_dir: Path, commit: str) -> dict[str, Any]:
+    """Replay captured offload routes inside the already-pinned torch container."""
+    from flexmoe.analysis.decode_replay import replay_file
+
+    rows: list[dict[str, Any]] = []
+    for repetition in range(3):
+        for rank in range(4):
+            path = run_dir / f"decode-rep-{repetition:03d}-rank-{rank}.json.gz"
+            try:
+                replay = replay_file(path)
+            except (
+                OSError,
+                ValueError,
+                KeyError,
+                TypeError,
+                json.JSONDecodeError,
+            ) as exc:
+                replay = {"status": "invalid-profile", "error_type": type(exc).__name__}
+            rows.append(
+                {
+                    "repetition": repetition,
+                    "rank": rank,
+                    **{
+                        key: value
+                        for key, value in replay.items()
+                        if key
+                        in (
+                            "status",
+                            "error_type",
+                            "current_policy_misses",
+                            "lru_misses",
+                            "future_aware_misses",
+                            "future_aware_saved_bytes",
+                            "complete_steps",
+                            "lru_initial_recency",
+                        )
+                    },
+                }
+            )
+    result = {
+        "run_id": run_dir.name,
+        "commit": commit,
+        "rows": rows,
+        "status": "baseline-reproduced-all-ranks"
+        if all(row["status"] == "baseline-reproduced" for row in rows)
+        else "incomplete-evidence",
+        "scope": "same warm cache state and 64 contiguous steps; eviction replay only, not real H2D prefetch",
+    }
+    shared.atomic_json(run_dir / "decode-cache-replay.json", result)
+    return result
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -609,6 +662,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     backend = DecodeMechanismBackend(config, **args)
     shared.run_benchmark(config, project_root=root, run_dir=run, backend=backend)
+    if backend.mode == "offload" and backend.profile:
+        saved = shared.read_json(run / "summary.json")
+        save_cache_replays(run, saved["contract"]["commit"])
     print(run.name)
     return 0
 

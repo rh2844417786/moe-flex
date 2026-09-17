@@ -4,7 +4,7 @@ set -euo pipefail
 # Sourceable seams exercise the real argument construction with a container recorder.
 decode_clean() {
   local state
-  state="$(git -C "$1" status --porcelain -- . ':(exclude)docs/results/decode-mechanism-*')" || return 1
+  state="$(git -C "$1" status --porcelain -- . ':(exclude)docs/results/decode-mechanism-*' ':(exclude)docs/results/decode-decision-*')" || return 1
   [[ -z "${state}" ]]
 }
 

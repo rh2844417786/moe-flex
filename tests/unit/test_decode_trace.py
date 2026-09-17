@@ -265,6 +265,11 @@ def test_worker_rpc_gateway_attaches_real_pool_and_restores(monkeypatch):
     result = worker.fluxmoe_decode_mechanism("stop")
     assert result["rank"] == 2
     assert len(result["pool_profile"]["rows"]) == 2
+    assert result["pool_profile"]["initial_policy_state"]["total_layers"] == 2
+    assert [row["demand_ids"] for row in result["pool_profile"]["rows"]] == [
+        [0, 1, 2],
+        [0, 1, 2],
+    ]
     assert result["activation_rows"][0]["histogram"] == [2, 1, 1, 0]
     assert pool.profile_observer is None
 
