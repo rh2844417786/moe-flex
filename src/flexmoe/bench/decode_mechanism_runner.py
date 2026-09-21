@@ -671,8 +671,16 @@ def save_cache_replays(run_dir: Path, commit: str) -> dict[str, Any]:
     """Replay captured offload routes inside the already-pinned torch container."""
     from flexmoe.analysis.decode_replay import replay_file
 
+    summary = shared.read_json(run_dir / "summary.json")
+    repetitions = summary.get("repetitions")
+    if (
+        summary.get("repetitions_completed") != 3
+        or not isinstance(repetitions, list)
+        or len(repetitions) != 3
+    ):
+        raise ValueError("cache replay requires exactly three completed repetitions")
     rows: list[dict[str, Any]] = []
-    for repetition in range(3):
+    for repetition in range(len(repetitions)):
         for rank in range(4):
             path = run_dir / f"decode-rep-{repetition:03d}-rank-{rank}.json.gz"
             try:
@@ -702,6 +710,9 @@ def save_cache_replays(run_dir: Path, commit: str) -> dict[str, Any]:
                             "future_aware_saved_bytes",
                             "complete_steps",
                             "lru_initial_recency",
+                            "current",
+                            "lru",
+                            "future_aware",
                         )
                     },
                 }

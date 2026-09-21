@@ -24,11 +24,14 @@ def module():
 
 
 def test_container_side_cache_replay_writes_all_rank_numeric_results(tmp_path):
-    from flexmoe.runtime.expert_cache_policy import ExpertCachePolicy
+    from test_decode_replay import profiled_rows
 
     run = tmp_path / "point"
     run.mkdir()
-    initial = ExpertCachePolicy(1, 4, 0.0, 1).replay_snapshot()
+    (run / "summary.json").write_text(
+        json.dumps({"repetitions_completed": 3, "repetitions": [{}, {}, {}]})
+    )
+    initial, rows, expert_bytes = profiled_rows()
     for repetition in range(3):
         for rank in range(4):
             path = run / f"decode-rep-{repetition:03d}-rank-{rank}.json.gz"
@@ -37,25 +40,17 @@ def test_container_side_cache_replay_writes_all_rank_numeric_results(tmp_path):
                     {
                         "artifact_kind": "decode-profile",
                         "profile": True,
-                        "geometry": {"total_layers": 1, "expert_bytes": 10},
+                        "geometry": {
+                            "total_layers": 2,
+                            "expert_bytes": expert_bytes,
+                        },
                         "observation": {
                             "coverage_status": "complete",
                             "captured_steps": 64,
                             "pool_profile": {
                                 "initial_policy_state": initial,
                                 "dropped_rows": 0,
-                                "rows": [
-                                    {
-                                        "step": step,
-                                        "layer": 0,
-                                        "actual_batch": 16,
-                                        "demand_ids": [1],
-                                        "unique_misses": int(step == 0),
-                                        "loaded_bytes": 10 if step == 0 else 0,
-                                        "status": "complete",
-                                    }
-                                    for step in range(64)
-                                ],
+                                "rows": rows,
                             },
                         },
                     },
@@ -67,6 +62,17 @@ def test_container_side_cache_replay_writes_all_rank_numeric_results(tmp_path):
     assert len(result["rows"]) == 12
     assert all(row["status"] == "baseline-reproduced" for row in result["rows"])
     assert json.loads((run / "decode-cache-replay.json").read_text()) == result
+
+
+def test_container_side_cache_replay_rejects_non_protocol_repetition_count(tmp_path):
+    run = tmp_path / "point"
+    run.mkdir()
+    (run / "summary.json").write_text(
+        json.dumps({"repetitions_completed": 2, "repetitions": [{}, {}]})
+    )
+
+    with pytest.raises(ValueError, match="three completed repetitions"):
+        module().save_cache_replays(run, "committed-sha")
 
 
 def config(tmp_path):
@@ -501,7 +507,14 @@ def test_cli_passes_explicit_new_parameters_to_shared_runner(tmp_path, monkeypat
         folder = kwargs["run_dir"]
         folder.mkdir()
         (folder / "summary.json").write_text(
-            json.dumps({"status": "complete", "contract": {"commit": "fixture"}})
+            json.dumps(
+                {
+                    "status": "complete",
+                    "contract": {"commit": "fixture"},
+                    "repetitions_completed": 3,
+                    "repetitions": [{}, {}, {}],
+                }
+            )
         )
 
     monkeypatch.setattr(
