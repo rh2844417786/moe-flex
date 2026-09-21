@@ -25,6 +25,7 @@ def summary(*, mode="offload", kv=1024, misses=0, profile=False):
         "smoke": {"output_sha256": "same-output"},
         "contract": {
             "commit": "same-commit",
+            "engine_policy_sha256": "same-policy",
             "expert_cache": {"profile_sha256": "same-profile"},
             "batch_size": 1,
             "context_length": 1024,
@@ -242,6 +243,9 @@ def test_decision_plan_contains_only_approved_points_and_horizons():
     allowed_request_counts = {1, 16, 32, 64}
     for point in plan:
         argv = point["argv"]
+        if point["status"] == "skipped":
+            assert argv == []
+            continue
         assert int(argv[argv.index("--batch-size") + 1]) in allowed_request_counts
         if "--prefetch-horizon" in argv:
             assert int(argv[argv.index("--prefetch-horizon") + 1]) in (0, 1, 2)
@@ -277,6 +281,32 @@ def test_decision_plan_skips_k1_when_offload_does_not_exceed_resident_ceiling():
     ]
 
 
+def test_decision_plan_skips_legacy_points_above_each_mode_capacity():
+    from flexmoe.analysis.decode_decision import build_decision_plan
+
+    plan = build_decision_plan(
+        run_id="r",
+        capacities={
+            "native_kv": 40_000_000_000,
+            "eager_kv": 16_000_000_000,
+            "offload_kv": 40_000_000_000,
+            "resident_ceiling": 40_000_000_000,
+            "k_pair": 16_000_000_000,
+            "legacy_kv": 32_815_054_848,
+            "kv_block_bytes": 100,
+        },
+        trace_paths={16: "trace16", 32: "trace32"},
+    )
+    legacy = {row["label"]: row for row in plan if row["label"].startswith("legacy-")}
+
+    assert legacy["legacy-native"]["status"] == "planned"
+    assert legacy["legacy-eager-resident"]["status"] == "skipped"
+    assert (
+        legacy["legacy-eager-resident"]["reason"] == "legacy-kv-exceeds-mode-capacity"
+    )
+    assert legacy["legacy-offload"]["status"] == "planned"
+
+
 def test_forced_omission_is_derived_from_a_real_nonfirst_layer_route(tmp_path):
     import gzip
     import json
@@ -293,18 +323,22 @@ def test_forced_omission_is_derived_from_a_real_nonfirst_layer_route(tmp_path):
                         "step_id": 4,
                         "layer_id": 0,
                         "actual_expert_ids": [1, 2],
+                        "miss_ids": [1],
                     },
                     {
                         "step_id": 4,
                         "layer_id": 1,
                         "actual_expert_ids": [3, 7],
+                        "resident_hit_ids": [3],
+                        "cache_hit_ids": [],
+                        "miss_ids": [7],
                     },
                 ],
             },
             stream,
         )
 
-    assert derive_forced_omission(path) == "4:1:3"
+    assert derive_forced_omission(path) == "4:1:7"
 
 
 def test_oracle_output_gate_requires_all_three_horizons_and_forced_hash_match():
@@ -363,6 +397,90 @@ def test_interrupted_atomic_write_does_not_prevent_resume(tmp_path):
     _save(path, {"status": "running"})
     assert json.loads(path.read_text()) == {"status": "running"}
     assert (tmp_path / "state.json.new").read_text() == "old partial content"
+
+
+def test_failed_suite_publishes_partial_report_and_marks_unreached_points(tmp_path):
+    import json
+    from pathlib import Path
+
+    from flexmoe.analysis.decode_decision import _publish_report
+
+    source_root = Path(__file__).resolve().parents[2]
+    root = tmp_path / "project"
+    output = root / "docs/results/decode-decision-failed-run"
+    state = {
+        "run_id": "failed-run",
+        "commit": "a" * 40,
+        "status": "failed",
+        "suite_error_type": "RuntimeError",
+        "points": {
+            "failed-run-zero-offload": {
+                "label": "zero-offload",
+                "mode": "offload",
+                "status": "failed",
+                "error_type": "RuntimeError",
+                "argv": [],
+            }
+        },
+        "point_plan": [
+            {
+                "label": "oracle-16-h0",
+                "name": "failed-run-oracle-16-h0",
+                "mode": "offload",
+                "status": "planned",
+                "argv": [],
+            }
+        ],
+        "numeric": {},
+    }
+
+    _publish_report(
+        root,
+        output,
+        state,
+        report_script=source_root / "src/flexmoe/analysis/decode_oracle_report.py",
+    )
+
+    saved = json.loads((output / "report.json").read_text())
+    assert saved["status"] == "failed"
+    assert saved["suite_error_type"] == "RuntimeError"
+    assert {row["status"] for row in saved["failed_points"]} == {
+        "failed",
+        "unreached",
+    }
+    markdown = (output / "report.md").read_text()
+    assert "zero-offload" in markdown
+    assert "oracle-16-h0" in markdown
+
+
+def test_report_publisher_rejects_preexisting_symlink(tmp_path):
+    from pathlib import Path
+
+    from flexmoe.analysis.decode_decision import _publish_report
+
+    source_root = Path(__file__).resolve().parents[2]
+    root = tmp_path / "project"
+    results = root / "docs/results"
+    results.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    output = results / "decode-decision-r"
+    output.symlink_to(outside, target_is_directory=True)
+    state = {
+        "run_id": "r",
+        "commit": "a" * 40,
+        "status": "failed",
+        "points": {},
+        "numeric": {},
+    }
+
+    with pytest.raises(RuntimeError, match="report output"):
+        _publish_report(
+            root,
+            output,
+            state,
+            report_script=source_root / "src/flexmoe/analysis/decode_oracle_report.py",
+        )
 
 
 def test_calibration_commit_lives_at_top_level_not_contract():
@@ -440,6 +558,15 @@ def test_point_summary_keeps_scheduler_pressure_and_actual_batch_distribution():
         ]
         rep["scheduler"]["preemptions"]["total"] = 2
         rep["scheduler"]["kv_cache_usage"]["peak"] = 0.9
+        rep["memory"] = [
+            {
+                "rank": rank,
+                "free_gpu_bytes": 3_000_000_000 + rank,
+                "torch_reserved_bytes": 1_000,
+                "torch_peak_reserved_bytes": 2_000,
+            }
+            for rank in range(4)
+        ]
     result = point_metrics(run)
     assert result["actual_kv"] == 1024
     assert result["throughput"] == 100.0
@@ -455,6 +582,34 @@ def test_point_summary_keeps_scheduler_pressure_and_actual_batch_distribution():
         "measured_count": None,
     }
     assert result["recomputed_tokens"]["status"] == "unavailable"
+    assert result["decode_batch_distribution"] == {"16": 60, "32": 30}
+    assert result["actual_kv_geometry"] == {
+        "allocated_bytes_per_rank": 1024,
+        "num_gpu_blocks": 32,
+        "bytes_per_block": 32,
+    }
+    assert result["safety_headroom_per_repetition"][0]["min_bytes"] == 2_999_999_000
+    assert result["throughput_samples_tokens_s"] == [100.0, 100.0, 100.0]
+    assert result["throughput_range_tokens_s"] == {"min": 100.0, "max": 100.0}
+    assert result["identity"] == {
+        "commit": "same-commit",
+        "input_sha256": "workload",
+        "calibration_input_hashes_sha256": "same-calibration",
+        "model_identity_sha256": "model",
+        "hardware_sha256": "same-h100s",
+        "profile_sha256": "same-profile",
+        "batch_size": 1,
+        "context_length": 1024,
+        "output_length": 256,
+        "max_num_seqs": 32,
+        "max_num_batched_tokens": 8192,
+        "seed": 20260912,
+        "gpu_memory_utilization": 0.9,
+        "physical_safety_reserve_bytes": 2_000_000_000,
+        "engine_policy_sha256": "same-policy",
+        "source_hashes": {"decode_mechanism_runner.py": "same-code"},
+        "smoke_output_sha256": "same-output",
+    }
 
 
 def test_point_summary_keeps_phase_and_request_percentiles_per_repetition():
@@ -531,9 +686,31 @@ def test_replay_is_only_reported_when_all_four_ranks_three_reps_reproduce():
     ]
     complete = aggregate_replay(rows)
     assert complete["status"] == "baseline-reproduced-all-ranks"
-    assert complete["current_policy_misses"] == 36
-    assert complete["future_aware_misses"] == 12
+    assert complete["current_policy_misses"] == 3
+    assert complete["future_aware_misses"] == 1
+    assert len(complete["logical_rank0_per_repetition"]) == 3
     rows[10]["status"] = "baseline-mismatch"
+    assert aggregate_replay(rows)["status"] == "incomplete-evidence"
+
+
+def test_replay_rejects_rank_divergence_instead_of_summing_logical_routes():
+    from flexmoe.analysis.decode_decision import aggregate_replay
+
+    rows = [
+        {
+            "rank": rank,
+            "repetition": rep,
+            "status": "baseline-reproduced",
+            "current_policy_misses": 3,
+            "lru_misses": 2,
+            "future_aware_misses": 1,
+            "future_aware_saved_bytes": 20,
+        }
+        for rep in range(3)
+        for rank in range(4)
+    ]
+    rows[7]["lru_misses"] = 99
+
     assert aggregate_replay(rows)["status"] == "incomplete-evidence"
 
 
@@ -618,6 +795,9 @@ def test_profile_span_is_labeled_cuda_instrumented_not_pure_decode_wall(tmp_path
                                 "cpu_timing": {
                                     "status": "measured",
                                     "host_gather_s": 0.004,
+                                    "weight_gather_cpu_s": 0.003,
+                                    "host_map_cpu_s": 0.001,
+                                    "host_reuse_wait_s": 0.005,
                                 },
                                 "loaded_bytes": 10,
                             },
@@ -625,6 +805,9 @@ def test_profile_span_is_labeled_cuda_instrumented_not_pure_decode_wall(tmp_path
                                 "cpu_timing": {
                                     "status": "measured",
                                     "host_gather_s": 0.002,
+                                    "weight_gather_cpu_s": 0.0,
+                                    "host_map_cpu_s": 0.002,
+                                    "host_reuse_wait_s": 0.001,
                                 },
                                 "loaded_bytes": 0,
                             },
@@ -639,6 +822,9 @@ def test_profile_span_is_labeled_cuda_instrumented_not_pure_decode_wall(tmp_path
     assert measured["model_step_cuda_p50_ms"] == 20
     assert measured["model_step_cuda_p95_ms"] == pytest.approx(29)
     assert measured["host_gather_cpu_sum_s"] == pytest.approx(0.006)
+    assert measured["weight_gather_cpu_sum_s"] == pytest.approx(0.003)
+    assert measured["host_map_cpu_sum_s"] == pytest.approx(0.003)
+    assert measured["host_reuse_wait_cpu_sum_s"] == pytest.approx(0.006)
     assert measured["payload_bytes"] == 10
 
 
@@ -660,6 +846,33 @@ def test_build_is_offline_and_runs_before_any_gpu_point(tmp_path, monkeypatch):
     build_image(tmp_path, tmp_path, state, "sha")
     assert seen == [(["bash", "scripts/server/build.sh"], tmp_path, "1", 1800)]
     assert state["build"]["status"] == "complete"
+
+
+def test_point_wrapper_exit_124_is_preserved_as_timeout(tmp_path, monkeypatch):
+    import subprocess
+    from types import SimpleNamespace
+
+    from flexmoe.analysis.decode_decision import _run_point
+
+    monkeypatch.setattr(
+        "flexmoe.analysis.decode_decision.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=124),
+    )
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    state = {"commit": "sha", "points": {}}
+    point = {
+        "name": "timed-out",
+        "label": "timed-out",
+        "mode": "offload",
+        "argv": ["false"],
+    }
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        _run_point(tmp_path, state_dir, state, point, 120)
+
+    assert state["points"]["timed-out"]["status"] == "timeout"
+    assert state["points"]["timed-out"]["error_type"] == "TimeoutExpired"
 
 
 def test_report_embeds_the_twelve_rank_level_zero_miss_proofs():

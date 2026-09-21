@@ -93,11 +93,14 @@ def test_oracle_trace_round_trip_preserves_prediction_and_forced_omission():
 def test_rank0_profile_loader_requires_exact_identity_and_complete_layers(tmp_path):
     from flexmoe.runtime.oracle_trace import OracleTrace
 
+    canonical_sha = OracleTrace.from_rows(
+        rows_for_two_steps(), identity()
+    ).logical_sha256
     artifact = {
         "artifact_kind": "decode-logical-cache-trace",
         "contract": identity(),
         "rows": rows_for_two_steps(),
-        "logical_sha256": "e" * 64,
+        "logical_sha256": canonical_sha,
     }
     path = tmp_path / "trace.json.gz"
     with gzip.open(path, "wt") as stream:
@@ -105,7 +108,14 @@ def test_rank0_profile_loader_requires_exact_identity_and_complete_layers(tmp_pa
 
     trace = OracleTrace.from_rank0_profile(path, identity(), minimum_steps=2)
     assert trace.step_range == (10, 11)
-    assert trace.logical_sha256 == "e" * 64
+    assert trace.logical_sha256 == canonical_sha
+
+    artifact["logical_sha256"] = "e" * 64
+    with gzip.open(path, "wt") as stream:
+        json.dump(artifact, stream)
+    with pytest.raises(ValueError, match="SHA-256"):
+        OracleTrace.from_rank0_profile(path, identity(), minimum_steps=2)
+    artifact["logical_sha256"] = canonical_sha
 
     wrong = identity()
     wrong["input_sha256"] = "f" * 64

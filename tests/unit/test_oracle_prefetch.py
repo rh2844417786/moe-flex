@@ -13,6 +13,8 @@ class FakeTransfer:
         self.ready = ready
         self.enqueued = []
         self.waited_handles = []
+        self.host_waited_handles = []
+        self.deferred_reuse = 0
         self._serial = 0
 
     def enqueue(self, copies):
@@ -28,6 +30,10 @@ class FakeTransfer:
         self.ready = True
         return handle
 
+    def wait_host(self, handle):
+        self.host_waited_handles.append(handle)
+        self.ready = True
+
     def elapsed_ms(self, handle):
         return 1.25 if self.ready else None
 
@@ -36,6 +42,9 @@ class FakeTransfer:
 
     def synchronize(self):
         self.ready = True
+
+    def defer_reuse_until_current_stream(self):
+        self.deferred_reuse += 1
 
 
 def test_prefetch_reuses_only_free_existing_ingress_slots():
@@ -56,7 +65,12 @@ def test_resolve_waits_only_for_required_not_ready_experts():
     from flexmoe.runtime.oracle_prefetch import OracleIngress
 
     backend = FakeTransfer(ready=False)
-    ingress = OracleIngress(capacity=4, expert_bytes=24, transfer_backend=backend)
+    ingress = OracleIngress(
+        capacity=4,
+        expert_bytes=24,
+        transfer_backend=backend,
+        enable_timing=True,
+    )
     ticket = ingress.schedule(step=1, source_layer=0, target_layer=1, expert_ids=(2, 3))
 
     resolved = ingress.resolve(step=1, layer=1, required_ids=(2, 4))
@@ -75,8 +89,12 @@ def test_resolve_waits_only_for_required_not_ready_experts():
 def test_finish_layer_releases_only_matching_in_use_slots():
     from flexmoe.runtime.oracle_prefetch import OracleIngress
 
+    backend = FakeTransfer()
     ingress = OracleIngress(
-        capacity=3, expert_bytes=24, transfer_backend=FakeTransfer()
+        capacity=3,
+        expert_bytes=24,
+        transfer_backend=backend,
+        enable_timing=True,
     )
     ingress.schedule(step=1, source_layer=0, target_layer=1, expert_ids=(2, 3))
     ingress.resolve(step=1, layer=1, required_ids=(2, 3))
@@ -86,6 +104,13 @@ def test_finish_layer_releases_only_matching_in_use_slots():
 
     assert ingress.free_slots == (0, 1)
     assert ingress.entries == {(1, 2, 1): 2}
+    assert backend.deferred_reuse == 1
+    assert backend.host_waited_handles == [Handle(1)]
+    stats = ingress.stats()
+    assert stats["transfer_h2d_ms_p50"] == 1.25
+    assert stats["transfer_h2d_timing_status"] == "measured"
+    assert stats["host_buffer_reuse_wait_ms_p50"] is not None
+    assert stats["transfer_queue_wait_ms"]["status"] == "unavailable"
 
 
 def test_duplicate_schedule_is_rejected_without_aliasing_slots():

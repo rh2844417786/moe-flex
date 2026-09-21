@@ -22,8 +22,10 @@ class OracleTransferBackend(Protocol):
     def enqueue(self, copies: Sequence[TensorCopy]) -> Any: ...
     def query(self, handle: Any) -> bool: ...
     def wait(self, handle: Any) -> Any | None: ...
+    def wait_host(self, handle: Any) -> None: ...
     def elapsed_ms(self, handle: Any) -> float | None: ...
     def wait_elapsed_ms(self, handle: Any) -> float | None: ...
+    def defer_reuse_until_current_stream(self) -> None: ...
     def synchronize(self) -> None: ...
 
 
@@ -67,6 +69,7 @@ class OracleIngress:
         transfer_backend: OracleTransferBackend,
         copy_factory: Callable[[OracleKey, int], Sequence[TensorCopy]] | None = None,
         clock_ns: Callable[[], int] = perf_counter_ns,
+        enable_timing: bool = False,
     ) -> None:
         if type(capacity) is not int or capacity <= 0:
             raise ValueError("oracle ingress capacity must be positive")
@@ -77,6 +80,7 @@ class OracleIngress:
         self.backend = transfer_backend
         self.copy_factory = copy_factory
         self.clock_ns = clock_ns
+        self.enable_timing = bool(enable_timing)
         self._free: set[int] = set(range(capacity))
         self._entries: dict[OracleKey, _Entry] = {}
         self._tickets: dict[tuple[int, int], PrefetchTicket] = {}
@@ -89,6 +93,8 @@ class OracleIngress:
         self._all_ready_layer_batches = 0
         self._wait_handles: list[Any] = []
         self._released_without_use = 0
+        self._transfer_h2d_ms: list[float] = []
+        self._host_buffer_reuse_wait_ms: list[float] = []
 
     @property
     def free_slots(self) -> tuple[int, ...]:
@@ -146,7 +152,7 @@ class OracleIngress:
             expert_ids=ids,
             slots=slots,
             handle=handle,
-            enqueued_ns=self.clock_ns(),
+            enqueued_ns=self.clock_ns() if self.enable_timing else 0,
         )
         self._tickets[(step, target_layer)] = ticket
         for key, slot in zip(keys, slots, strict=True):
@@ -196,7 +202,7 @@ class OracleIngress:
             ready_before_use_count=ready_count,
             required_prefetch_count=len(prefetched),
             layer_batch_all_ready=all_ready,
-            resolved_ns=self.clock_ns(),
+            resolved_ns=self.clock_ns() if self.enable_timing else 0,
         )
 
     def reserve_on_demand(
@@ -222,10 +228,27 @@ class OracleIngress:
     def finish_layer(self, *, step: int, layer: int) -> None:
         ticket = self._tickets.pop((step, layer), None)
         keys = [key for key in self._entries if key[:2] == (step, layer)]
-        if ticket is not None and any(
-            self._entries[key].state == "inflight" for key in keys
-        ):
-            self.backend.wait(ticket.handle)
+        if ticket is not None:
+            # A compute-stream wait only orders device work; it does not make
+            # the reusable pinned source safe for CPU writes.  Complete this
+            # ticket on the host before the slot/source row can be recycled.
+            if self.enable_timing:
+                wait_started = self.clock_ns()
+                self.backend.wait_host(ticket.handle)
+                self._host_buffer_reuse_wait_ms.append(
+                    (self.clock_ns() - wait_started) / 1_000_000
+                )
+                transfer_ms = self.backend.elapsed_ms(ticket.handle)
+                if transfer_ms is not None:
+                    self._transfer_h2d_ms.append(transfer_ms)
+            else:
+                self.backend.wait_host(ticket.handle)
+        if keys:
+            # Expert compute and cache promotion were enqueued on the current
+            # compute stream.  Before returning these physical slots to the
+            # transfer queue, order that queue behind the current stream so a
+            # later H2D cannot overwrite weights that are still being read.
+            self.backend.defer_reuse_until_current_stream()
         for key in keys:
             entry = self._entries.pop(key)
             if entry.state != "in_use":
@@ -264,6 +287,30 @@ class OracleIngress:
                 if self._required_prefetch
                 else None
             ),
+            "transfer_h2d_ms_samples": list(self._transfer_h2d_ms),
+            "transfer_h2d_ms_p50": _percentile(self._transfer_h2d_ms, 0.50),
+            "transfer_h2d_ms_p95": _percentile(self._transfer_h2d_ms, 0.95),
+            "transfer_h2d_ms_p99": _percentile(self._transfer_h2d_ms, 0.99),
+            "transfer_h2d_timing_status": (
+                "measured" if self._transfer_h2d_ms else "unavailable"
+            ),
+            "host_buffer_reuse_wait_ms_samples": list(self._host_buffer_reuse_wait_ms),
+            "host_buffer_reuse_wait_ms_p50": _percentile(
+                self._host_buffer_reuse_wait_ms, 0.50
+            ),
+            "host_buffer_reuse_wait_ms_p95": _percentile(
+                self._host_buffer_reuse_wait_ms, 0.95
+            ),
+            "host_buffer_reuse_wait_ms_p99": _percentile(
+                self._host_buffer_reuse_wait_ms, 0.99
+            ),
+            "host_buffer_reuse_wait_timing_status": (
+                "measured" if self._host_buffer_reuse_wait_ms else "unavailable"
+            ),
+            "transfer_queue_wait_ms": {
+                "status": "unavailable",
+                "reason": "no distinct enqueue-ready event is recorded; H2D event duration and exposed compute wait remain separate",
+            },
         }
 
 
@@ -297,6 +344,7 @@ class CudaOracleTransferBackend:
         self.device = device
         self.enable_timing = bool(enable_timing)
         self.stream = torch.cuda.Stream(device=device)  # type: ignore[no-untyped-call]
+        self._reuse_events: list[Any] = []
 
     def enqueue(self, copies: Sequence[TensorCopy]) -> CudaTransferHandle:
         for destination, source in copies:
@@ -336,6 +384,9 @@ class CudaOracleTransferBackend:
         end.record(stream)  # type: ignore[no-untyped-call]
         return CudaWaitHandle(start=start, end=end)
 
+    def wait_host(self, handle: CudaTransferHandle) -> None:
+        handle.end.synchronize()
+
     def elapsed_ms(self, handle: CudaTransferHandle) -> float | None:
         if handle.start is None or not self.query(handle):
             return None
@@ -345,6 +396,14 @@ class CudaOracleTransferBackend:
         if not handle.end.query():
             return None
         return float(handle.start.elapsed_time(handle.end))
+
+    def defer_reuse_until_current_stream(self) -> None:
+        event = torch.cuda.Event(enable_timing=False)  # type: ignore[no-untyped-call]
+        event.record(torch.cuda.current_stream(self.device))  # type: ignore[no-untyped-call]
+        with torch.cuda.stream(self.stream):
+            self.stream.wait_event(event)
+        self._reuse_events = [item for item in self._reuse_events if not item.query()]
+        self._reuse_events.append(event)
 
     def synchronize(self) -> None:
         self.stream.synchronize()

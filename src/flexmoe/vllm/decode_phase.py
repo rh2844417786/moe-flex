@@ -25,6 +25,8 @@ class PhaseTimeline:
         self._start_ns: int | None = None
         self._stop_ns: int | None = None
         self._active: tuple[int, str, int | None, int] | None = None
+        self._first_prefill_start_ns: int | None = None
+        self._first_prefill_end_ns: int | None = None
         self._first_decode_ns: int | None = None
         self._last_decode_end_ns: int | None = None
         self._decode_step_ms: list[float] = []
@@ -58,6 +60,8 @@ class PhaseTimeline:
         now = self._now()
         if not self._sequence or self._sequence[-1] != phase:
             self._sequence.append(phase)
+        if phase == "prefill" and self._first_prefill_start_ns is None:
+            self._first_prefill_start_ns = now
         if phase == "decode" and self._first_decode_ns is None:
             self._first_decode_ns = now
         self._active = (step, phase, actual_batch, now)
@@ -74,6 +78,8 @@ class PhaseTimeline:
         if phase == "decode":
             self._last_decode_end_ns = ended
             self._decode_step_ms.append((ended - started) / 1_000_000)
+        elif phase == "prefill" and self._first_prefill_end_ns is None:
+            self._first_prefill_end_ns = ended
         self._step_count += 1
         self._active = None
 
@@ -84,7 +90,9 @@ class PhaseTimeline:
             self.finish(step=self._active[0])
         self._stop_ns = self._now()
         complete = (
-            self._first_decode_ns is not None
+            self._first_prefill_start_ns is not None
+            and self._first_prefill_end_ns is not None
+            and self._first_decode_ns is not None
             and self._last_decode_end_ns is not None
             and self._last_decode_end_ns >= self._first_decode_ns
         )
@@ -110,9 +118,11 @@ class PhaseTimeline:
             "scope": "per-rank monotonic worker wall; never summed across TP ranks",
             "boundaries": {
                 "measurement_start_ns": self._start_ns,
+                "first_prefill_start_ns": self._first_prefill_start_ns,
+                "first_prefill_end_ns": self._first_prefill_end_ns,
                 "first_decode_start_ns": self._first_decode_ns,
                 "last_decode_end_ns": self._last_decode_end_ns,
-                "measurement_stop_ns": self._stop_ns,
+                "synchronized_measurement_end_ns": self._stop_ns,
             },
         }
 

@@ -368,11 +368,14 @@ class ExpertPool:
             expert_bytes=self.expert_bytes,
             transfer_backend=backend,
             copy_factory=copies,
+            enable_timing=enable_timing,
         )
         self._oracle_stats = {
             "status": "active",
             "prefetch_horizon": horizon,
             "route_mismatch_count": 0,
+            "route_match_count": 0,
+            "trace_unavailable_count": 0,
             "forced_omission_count": 0,
             "forced_fallback_count": 0,
             "fallback_on_demand_count": 0,
@@ -380,6 +383,7 @@ class ExpertPool:
             "prefetch_loaded_bytes": 0,
             "unused_prefetch_bytes": 0,
             "lookahead_ms": [],
+            "timing_enabled": bool(enable_timing),
         }
 
     def _oracle_schedule_future(self, *, step: int, layer: int) -> None:
@@ -546,7 +550,14 @@ class ExpertPool:
                 match = self.oracle_trace.validate_actual(
                     step=oracle_step, layer=layer, ids=tuple(ids)
                 )
-                if match.status != "match":
+                if match.status == "match":
+                    self._oracle_stats["route_match_count"] += 1
+                elif match.status == "trace-unavailable":
+                    # The Oracle trace is intentionally a bounded 64-step
+                    # window.  Outside it, execute the unchanged on-demand
+                    # path and account for the uncovered layer explicitly.
+                    self._oracle_stats["trace_unavailable_count"] += 1
+                else:
                     self._oracle_stats["route_mismatch_count"] += 1
                 resolved = self.oracle_ingress.resolve(
                     step=oracle_step, layer=layer, required_ids=misses
@@ -570,19 +581,21 @@ class ExpertPool:
                     self._oracle_stats["unused_prefetch_bytes"] += (
                         len(unused) * self.expert_bytes
                     )
-                    self._oracle_stats["lookahead_ms"].append(
-                        (resolved.resolved_ns - resolved.ticket.enqueued_ns) / 1_000_000
-                    )
-                    self._oracle_stats["fallback_on_demand_count"] += len(fallback)
-                    omission = self.oracle_trace.forced_omission
-                    if (
-                        omission is not None
-                        and omission[:2] == (oracle_step, layer)
-                        and omission[2] in fallback
-                    ):
-                        self._oracle_stats["forced_fallback_count"] = (
-                            self._oracle_stats.get("forced_fallback_count", 0) + 1
+                    if self._oracle_stats["timing_enabled"]:
+                        self._oracle_stats["lookahead_ms"].append(
+                            (resolved.resolved_ns - resolved.ticket.enqueued_ns)
+                            / 1_000_000
                         )
+                self._oracle_stats["fallback_on_demand_count"] += len(fallback)
+                omission = self.oracle_trace.forced_omission
+                if (
+                    omission is not None
+                    and omission[:2] == (oracle_step, layer)
+                    and omission[2] in fallback
+                ):
+                    self._oracle_stats["forced_fallback_count"] = (
+                        self._oracle_stats.get("forced_fallback_count", 0) + 1
+                    )
                 self._oracle_stats["mandatory_loaded_bytes"] += (
                     len(misses) * self.expert_bytes
                 )

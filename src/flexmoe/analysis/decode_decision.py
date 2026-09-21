@@ -310,9 +310,72 @@ def compare_offload_kv(small: dict[str, Any], large: dict[str, Any]) -> dict[str
 def point_metrics(summary: dict[str, Any]) -> dict[str, Any]:
     actual, _ = _actual_kv(summary)
     reps = summary.get("repetitions", [])
+    throughput_samples = [
+        float(rep["output_tokens_per_second"])
+        for rep in reps
+        if type(rep.get("output_tokens_per_second")) in (int, float)
+    ]
+    contract = summary.get("contract", {})
+    identity_fields = (
+        "commit",
+        "input_sha256",
+        "calibration_input_hashes_sha256",
+        "model_identity_sha256",
+        "hardware_sha256",
+        "batch_size",
+        "context_length",
+        "output_length",
+        "max_num_seqs",
+        "max_num_batched_tokens",
+        "seed",
+        "gpu_memory_utilization",
+        "physical_safety_reserve_bytes",
+    )
+    identity = {
+        key: contract[key]
+        for key in identity_fields
+        if type(contract.get(key)) in (int, float, str)
+        and type(contract.get(key)) is not bool
+    }
+    profile_sha = contract.get("expert_cache", {}).get("profile_sha256")
+    if isinstance(profile_sha, str):
+        identity["profile_sha256"] = profile_sha
+    engine_policy_sha = contract.get("engine_policy_sha256")
+    if isinstance(engine_policy_sha, str):
+        identity["engine_policy_sha256"] = engine_policy_sha
+    source_hashes = summary.get("source_hashes")
+    if isinstance(source_hashes, dict) and all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in source_hashes.items()
+    ):
+        identity["source_hashes"] = dict(source_hashes)
+    smoke_sha = summary.get("smoke", {}).get("output_sha256")
+    if isinstance(smoke_sha, str):
+        identity["smoke_output_sha256"] = smoke_sha
+    actual_raw = summary.get("actual_kv", {})
+    actual_geometry = {
+        key: actual_raw[key]
+        for key in (
+            "requested_bytes",
+            "allocated_bytes_per_rank",
+            "num_gpu_blocks",
+            "rounding_bytes",
+            "bytes_per_block",
+        )
+        if type(actual_raw.get(key)) is int
+    }
     values: dict[str, Any] = {
         "actual_kv": actual,
+        "actual_kv_geometry": actual_geometry,
         "throughput": median(rep["output_tokens_per_second"] for rep in reps),
+        "throughput_samples_tokens_s": throughput_samples,
+        "throughput_range_tokens_s": {
+            "min": min(throughput_samples),
+            "max": max(throughput_samples),
+        }
+        if throughput_samples
+        else {"min": None, "max": None},
+        "identity": identity,
         "elapsed_median_s": median(rep["elapsed_s"] for rep in reps),
         "ttft_median_s": median(
             [
@@ -336,6 +399,7 @@ def point_metrics(summary: dict[str, Any]) -> dict[str, Any]:
         else None,
         "decode_batch_mean": None,
         "decode_batch_steps": None,
+        "decode_batch_distribution": None,
         "kv_usage_peak": None,
         "preemptions_total": None,
         "waiting_requests_peak": None,
@@ -356,6 +420,7 @@ def point_metrics(summary: dict[str, Any]) -> dict[str, Any]:
             "reason": "pinned scheduler statistics do not expose recomputed token counts",
         },
         "oracle_per_repetition": [],
+        "safety_headroom_per_repetition": [],
     }
     phases = [rep.get("phase") for rep in reps]
     phase_fields = (
@@ -411,11 +476,54 @@ def point_metrics(summary: dict[str, Any]) -> dict[str, Any]:
                 counts[int(size)] = counts.get(int(size), 0) + count
         steps = sum(counts.values())
         values["decode_batch_steps"] = steps
+        values["decode_batch_distribution"] = {
+            str(size): count for size, count in sorted(counts.items())
+        }
         values["decode_batch_mean"] = (
             sum(size * count for size, count in counts.items()) / steps
             if steps
             else None
         )
+    reserve = contract.get("physical_safety_reserve_bytes")
+    headroom_rows = []
+    for repetition, rep in enumerate(reps):
+        memory = rep.get("memory")
+        if (
+            not isinstance(memory, list)
+            or len(memory) != 4
+            or {row.get("rank") for row in memory if isinstance(row, dict)}
+            != set(range(4))
+        ):
+            headroom_rows.append({"repetition": repetition, "status": "unavailable"})
+            continue
+        by_rank = []
+        valid = True
+        for row in sorted(memory, key=lambda item: item["rank"]):
+            free = row.get("free_gpu_bytes")
+            current = row.get("torch_reserved_bytes")
+            peak = row.get("torch_peak_reserved_bytes")
+            if any(
+                type(value) is not int or value < 0 for value in (free, current, peak)
+            ):
+                valid = False
+                break
+            by_rank.append(free - max(0, peak - current))
+        if not valid:
+            headroom_rows.append({"repetition": repetition, "status": "unavailable"})
+            continue
+        minimum = min(by_rank)
+        headroom_rows.append(
+            {
+                "repetition": repetition,
+                "status": "measured",
+                "bytes_by_rank": by_rank,
+                "min_bytes": minimum,
+                "required_reserve_bytes": reserve if type(reserve) is int else None,
+                "reserve_passed": minimum >= reserve if type(reserve) is int else None,
+                "scope": "free_gpu_bytes minus positive Torch peak-reserved delta; rank-local, never summed",
+            }
+        )
+    values["safety_headroom_per_repetition"] = headroom_rows
     scheduler = [rep.get("scheduler", {}) for rep in reps]
     for field, item, operation in (
         ("kv_usage_peak", "kv_cache_usage", max),
@@ -516,15 +624,37 @@ def aggregate_replay(rows: list[dict[str, Any]]) -> dict[str, Any]:
     )
     if not valid:
         return {"status": "incomplete-evidence", "per_rank_repetition": rows}
+    logical_rows: list[dict[str, Any]] = []
+    for repetition in range(3):
+        ranked = sorted(
+            (row for row in rows if row["repetition"] == repetition),
+            key=lambda row: row["rank"],
+        )
+        canonical = {key: value for key, value in ranked[0].items() if key != "rank"}
+        if any(
+            {key: value for key, value in row.items() if key != "rank"} != canonical
+            for row in ranked[1:]
+        ):
+            return {
+                "status": "incomplete-evidence",
+                "reason": "logical-replay-differs-between-tp-ranks",
+                "per_rank_repetition": rows,
+            }
+        logical_rows.append(ranked[0])
     return {
         "status": "baseline-reproduced-all-ranks",
-        "current_policy_misses": sum(row["current_policy_misses"] for row in rows),
-        "lru_misses": sum(row["lru_misses"] for row in rows),
-        "future_aware_misses": sum(row["future_aware_misses"] for row in rows),
-        "future_aware_saved_bytes": sum(
-            row["future_aware_saved_bytes"] for row in rows
+        "current_policy_misses": median(
+            row["current_policy_misses"] for row in logical_rows
         ),
-        "scope": "identical recorded demand/state, resident set and persistent cache capacity; eviction-only; no prefetch or measured throughput",
+        "lru_misses": median(row["lru_misses"] for row in logical_rows),
+        "future_aware_misses": median(
+            row["future_aware_misses"] for row in logical_rows
+        ),
+        "future_aware_saved_bytes": median(
+            row["future_aware_saved_bytes"] for row in logical_rows
+        ),
+        "logical_rank0_per_repetition": logical_rows,
+        "scope": "rank-0 logical replay per repetition after exact four-rank equality; headline counts are three-repetition medians, never TP-rank sums; identical recorded demand/state, resident set and persistent cache capacity; eviction-only; no prefetch or measured throughput",
         "per_rank_repetition": rows,
     }
 
@@ -571,8 +701,11 @@ def profile_timing_file(path: Path) -> dict[str, Any]:
             ),
             "step_count": len(spans),
             "host_gather_cpu_sum_s": None,
+            "weight_gather_cpu_sum_s": None,
+            "host_map_cpu_sum_s": None,
+            "host_reuse_wait_cpu_sum_s": None,
             "payload_bytes": None,
-            "scope": "per-rank instrumented prepared-input to execute-model-return CUDA span; not unsampled decode wall",
+            "scope": "per-rank instrumented prepared-input to execute-model-return CUDA span; host reuse wait ends before weight gather; weight gather and host map are non-overlapping CPU intervals before H2D enqueue; not unsampled decode wall",
         }
         pool = obs.get("pool_profile")
         if isinstance(pool, dict):
@@ -582,13 +715,30 @@ def profile_timing_file(path: Path) -> dict[str, Any]:
                 and pool.get("dropped_rows") == 0
                 and all(
                     row.get("cpu_timing", {}).get("status") == "measured"
-                    and type(row["cpu_timing"].get("host_gather_s")) in (int, float)
+                    and all(
+                        type(row["cpu_timing"].get(field)) in (int, float)
+                        for field in (
+                            "host_gather_s",
+                            "weight_gather_cpu_s",
+                            "host_map_cpu_s",
+                            "host_reuse_wait_s",
+                        )
+                    )
                     and type(row.get("loaded_bytes")) is int
                     for row in rows
                 )
             ):
                 result["host_gather_cpu_sum_s"] = sum(
                     row["cpu_timing"]["host_gather_s"] for row in rows
+                )
+                result["weight_gather_cpu_sum_s"] = sum(
+                    row["cpu_timing"]["weight_gather_cpu_s"] for row in rows
+                )
+                result["host_map_cpu_sum_s"] = sum(
+                    row["cpu_timing"]["host_map_cpu_s"] for row in rows
+                )
+                result["host_reuse_wait_cpu_sum_s"] = sum(
+                    row["cpu_timing"]["host_reuse_wait_s"] for row in rows
                 )
                 result["payload_bytes"] = sum(row["loaded_bytes"] for row in rows)
         return result
@@ -798,19 +948,31 @@ def build_decision_plan(
         profile=True,
         target_batch=1,
     )
-    for label, mode in (
-        ("legacy-native", "native"),
-        ("legacy-eager-resident", "matched-resident"),
-        ("legacy-offload", "offload"),
+    for label, mode, capacity_key in (
+        ("legacy-native", "native", "native_kv"),
+        ("legacy-eager-resident", "matched-resident", "eager_kv"),
+        ("legacy-offload", "offload", "offload_kv"),
     ):
-        add(
-            label,
-            mode,
-            4096,
-            capacities["legacy_kv"],
-            32,
-            target_batch=32,
-        )
+        if capacities["legacy_kv"] <= capacities[capacity_key]:
+            add(
+                label,
+                mode,
+                4096,
+                capacities["legacy_kv"],
+                32,
+                target_batch=32,
+            )
+        else:
+            points.append(
+                {
+                    "label": label,
+                    "name": f"{run_id}-{label}",
+                    "mode": mode,
+                    "status": "skipped",
+                    "reason": "legacy-kv-exceeds-mode-capacity",
+                    "argv": [],
+                }
+            )
     add(
         "mechanism-native-32",
         "native",
@@ -933,10 +1095,11 @@ def derive_forced_omission(path: Path) -> str:
     for row in rows:
         if not isinstance(row, dict):
             raise TypeError("logical cache trace row is not an object")
-        step, layer, ids = (
+        step, layer, ids, misses = (
             row.get("step_id"),
             row.get("layer_id"),
             row.get("actual_expert_ids"),
+            row.get("miss_ids"),
         )
         if (
             type(step) is int
@@ -946,9 +1109,15 @@ def derive_forced_omission(path: Path) -> str:
             and isinstance(ids, list)
             and ids
             and all(type(expert) is int and expert >= 0 for expert in ids)
+            and isinstance(misses, list)
+            and misses
+            and all(
+                type(expert) is int and expert >= 0 and expert in ids
+                for expert in misses
+            )
         ):
-            return f"{step}:{layer}:{ids[0]}"
-    raise ValueError("logical trace has no nonfirst-layer expert to omit")
+            return f"{step}:{layer}:{misses[0]}"
+    raise ValueError("logical trace has no nonfirst-layer miss to omit")
 
 
 def oracle_output_gate(runs: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -996,6 +1165,71 @@ def _save(path: Path, value: dict[str, Any]) -> None:
         stream.flush()
         os.fsync(stream.fileno())
     tmp.replace(path)
+
+
+def _save_text(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}-{uuid4().hex}.new")
+    with tmp.open("x", encoding="utf-8") as stream:
+        stream.write(value)
+        stream.flush()
+        os.fsync(stream.fileno())
+    tmp.replace(path)
+
+
+def _publish_report(
+    root: Path,
+    public: Path,
+    state: dict[str, Any],
+    *,
+    report_script: Path | None = None,
+) -> None:
+    report_state = dict(state)
+    report_points = {name: dict(row) for name, row in state.get("points", {}).items()}
+    for spec in state.get("point_plan", []):
+        if not isinstance(spec, dict) or not isinstance(spec.get("name"), str):
+            continue
+        if spec["name"] not in report_points:
+            report_points[spec["name"]] = {
+                **spec,
+                "status": (
+                    "skipped" if spec.get("status") == "skipped" else "unreached"
+                ),
+                "reason": spec.get("reason", "upstream-point-failed"),
+            }
+    report_state["points"] = report_points
+    results_root = root / "docs/results"
+    results_root.mkdir(parents=True, exist_ok=True)
+    expected = results_root / f"decode-decision-{state.get('run_id')}"
+    if (
+        results_root.is_symlink()
+        or public != expected
+        or public.is_symlink()
+        or public.exists()
+        and not public.is_dir()
+    ):
+        raise RuntimeError("report output is not a canonical project directory")
+    if public.exists():
+        report_path = public / "report.json"
+        if not report_path.is_file() or report_path.is_symlink():
+            raise RuntimeError("report output has no verifiable prior ownership")
+        prior = _read(report_path)
+        if prior.get("run_id") != state.get("run_id") or prior.get(
+            "commit"
+        ) != state.get("commit"):
+            raise RuntimeError("report output belongs to another run or commit")
+    else:
+        public.mkdir(parents=False, exist_ok=False)
+    report_module = runpy.run_path(
+        str(
+            report_script
+            if report_script is not None
+            else root / "src/flexmoe/analysis/decode_oracle_report.py"
+        )
+    )
+    report_json, report_markdown = report_module["build_oracle_report"](report_state)
+    _save(public / "report.json", report_json)
+    _save_text(public / "report.md", report_markdown)
 
 
 def _point_summary(root: Path, name: str) -> dict[str, Any]:
@@ -1121,6 +1355,8 @@ def _run_point(
                 check=False,
             )
         state["points"][name]["exit_code"] = run.returncode
+        if run.returncode == 124:
+            raise subprocess.TimeoutExpired(point["argv"], timeout)
         if run.returncode:
             raise RuntimeError(f"point {name} exited {run.returncode}; see {err}")
         result = _point_summary(root, name)
@@ -1131,133 +1367,12 @@ def _run_point(
         print(f"{name}: complete", flush=True)
         return result
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
-        state["points"][name]["status"] = "failed"
+        state["points"][name]["status"] = (
+            "timeout" if isinstance(exc, subprocess.TimeoutExpired) else "failed"
+        )
         state["points"][name]["error_type"] = type(exc).__name__
         _save(state_dir / "state.json", state)
         raise
-
-
-def _markdown(state: dict[str, Any]) -> str:
-    def fmt(value: object, digits: int = 2) -> str:
-        return f"{value:,.{digits}f}" if type(value) in (int, float) else "—"
-
-    lines = [
-        "# TP4 卸载可行性补充实验",
-        "",
-        f"- Commit: `{state['commit']}`",
-        f"- Run ID: `{state['run_id']}`",
-        "- 四张 H100、GPU 使用率上限 0.90、物理安全余量每卡 2,000,000,000 bytes；模型挂载只读。",
-        "- 端到端吞吐 = 输出 token 数 / 包含 prefill 的整批墙钟；instrumented 点不纳入该对照。",
-        "- 基准工作量与显存预算必须通过配对验证，缺失字段记为不可判定。",
-        "",
-        "| 实验点 | 模式 | 状态 | 实际 KV/GPU GiB | 输出 token/s 中位数 | decode 平均实际 batch | KV 峰值比例 | 抢占总次 | 等待队列峰值 | TTFT 中位数 s | 请求延迟中位数 s |",
-        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
-    ]
-    for name, row in state["points"].items():
-        value = state.get("numeric", {}).get(name, {})
-        kv = value.get("actual_kv")
-        lines.append(
-            "| "
-            + " | ".join(
-                (
-                    name,
-                    row["mode"] + (" sampled" if "--profile" in row["argv"] else ""),
-                    row["status"],
-                    fmt(kv / 2**30 if type(kv) is int else None),
-                    fmt(value.get("throughput")),
-                    fmt(value.get("decode_batch_mean")),
-                    fmt(value.get("kv_usage_peak"), 3),
-                    fmt(value.get("preemptions_total"), 0),
-                    fmt(value.get("waiting_requests_peak"), 0),
-                    fmt(value.get("ttft_median_s"), 4),
-                    fmt(value.get("request_latency_median_s"), 4),
-                )
-            )
-            + " |"
-        )
-    capacity = state.get("capacity", {})
-    lines += [
-        "",
-        "## 容量与端到端对照",
-        "",
-        f"容量门槛：`{capacity.get('status', 'unavailable')}`；native 全驻留={capacity.get('native_bytes_per_rank')}，eager 全驻留={capacity.get('eager_bytes_per_rank')}，两者上限={capacity.get('resident_bytes_per_rank')}，卸载={capacity.get('offload_bytes_per_rank')}，超越较强 resident 的增量={capacity.get('extra_bytes_per_rank')} bytes/GPU。只有超过至少一个真实 KV block 且相同硬件/预算/工作量，才称为卸载独有容量。",
-        f"工作预算：native 参考={state.get('budgets', {}).get('native_kv')}；同为 eager 的 resident/offload 比较={state.get('budgets', {}).get('matched_eager_kv')} bytes/GPU（两种模式都能稳定自动分配的较小值）。",
-        f"无采样零 miss 四 rank × 三重复：`{state.get('zero_miss', {}).get('status', 'unavailable')}`；同 KV eager 配对：`{state.get('zero_pair', {}).get('status', 'unavailable')}`，卸载/全驻留吞吐比={fmt(state.get('zero_pair', {}).get('offload_over_resident'), 4)}。",
-        f"4K、64 个不同请求、并发上限 32，同 KV eager 配对：`{state.get('low_pair', {}).get('status', 'unavailable')}`，卸载/全驻留吞吐比={fmt(state.get('low_pair', {}).get('offload_over_resident'), 4)}。native 用自身 auto 上限作为强基线，不强制与 eager K 相等。上表的 actual batch 是实际观测值，不等同于请求数。",
-    ]
-    kv_pair = state.get("kv_intervention", {})
-    if kv_pair.get("status") == "measured-kv-intervention":
-        lines.append(
-            f"真正额外 KV 的同卸载路径干预：`{kv_pair['status']}`；大/小 KV 吞吐比={fmt(kv_pair['large_over_small_throughput'], 4)}；两点 workload、硬件、source SHA、执行配置与缓存策略均已核对。同时检查上表 KV 使用峰值、等待队列与抢占，不把单纯分配容量视作性能收益。"
-        )
-    else:
-        lines.append(
-            f"额外 KV 吞吐干预：`{kv_pair.get('status', 'not-run')}`；没有通过容量/匹配门槛时，不报告 K1/K0 性能净收益。"
-        )
-    lines += [
-        "",
-        "四 rank × 三重复的真实零 miss 判据（全部三项均为 0 才通过）：",
-        "",
-        "| repetition | rank | miss 次数 | payload bytes | copy launches |",
-        "|---:|---:|---:|---:|---:|",
-    ]
-    for row in state.get("zero_miss", {}).get("per_rank_repetition", []):
-        lines.append(
-            f"| {row['repetition']} | {row['rank']} | {row['misses']} | {row['payload_bytes']} | {row['copy_launches']} |"
-        )
-    lines += [
-        "",
-        "## 逐 rank 传输与 instrumented 时间",
-        "",
-        "`host_gather` 从 host reuse wait 结束后开始：miss 非空才 `index_select` 专家权重，然后总是填充所有专家的 CPU 映射；它在 H2D enqueue 之前结束。此 CPU 累计区间不是纯权重拷贝或 TP 全局净损失。",
-        "| 实验点 | payload bytes/GPU（3 次之和，rank 0–3） | cache miss/GPU（3 次之和，rank 0–3） |",
-        "|---|---|---|",
-    ]
-    for label in (
-        "zero-offload",
-        "low-offload",
-        "low-extra-kv",
-        "trace-16",
-        "trace-32",
-    ):
-        value = state.get("numeric", {}).get(f"{state['run_id']}-{label}", {})
-        if value:
-            lines.append(
-                f"| {label} | {value.get('payload_bytes_per_rank')} | {value.get('misses_per_rank')} |"
-            )
-    lines += [
-        "",
-        "instrumented CUDA span 为 prepared inputs → execute_model return，含测量扰动；host_gather 为逐 rank 的 CPU 区间和，绝不能从端到端时间中直接相减。",
-        "",
-        "| 样本 | repetition | rank | CUDA step p50 ms | CUDA step p95 ms | host_gather CPU sum s | 采样 payload bytes |",
-        "|---|---:|---:|---:|---:|---:|---:|",
-    ]
-    for label, key in (
-        ("eager-resident", "zero_timing_resident"),
-        ("zero-miss-offload", "zero_timing_offload"),
-        ("batch-16-offload", "trace_timing_16"),
-        ("batch-32-offload", "trace_timing_32"),
-    ):
-        for row in state.get(key, {}).get("per_rank_repetition", []):
-            lines.append(
-                f"| {label} | {row['repetition']} | {row['rank']} | {fmt(row.get('model_step_cuda_p50_ms'), 3)} | {fmt(row.get('model_step_cuda_p95_ms'), 3)} | {fmt(row.get('host_gather_cpu_sum_s'), 3)} | {row.get('payload_bytes')} |"
-            )
-    lines += ["", "## 同预算缓存重放（不是预取）", ""]
-    for size in (16, 32):
-        data = state.get(f"replay_{size}", {})
-        lines.append(
-            f"batch={size}：`{data.get('status', 'unavailable')}`；当前策略 miss={data.get('current_policy_misses')}，LRU miss={data.get('lru_misses')}，未来知情淘汰 miss={data.get('future_aware_misses')}，未来淘汰可避免 payload={data.get('future_aware_saved_bytes')} bytes（四 rank、三次采样合计）。"
-        )
-    lines += [
-        "",
-        "仅在原策略以捕获时的真实驻留/缓存状态逐层复现 miss 和 payload，且所有 rank 完整连续 64 步时，重放统计才成立。若生产策略为 LFU，其先前 LRU 顺序未被记录，LRU 从相同占用以 slot 顺序初始化，仅作条件性对照。未来知情淘汰不提前加载，也不改变 ingress、KV 容量或执行成本。",
-        "",
-        "## 尚未测量的边界",
-        "",
-        "独立 prefill/decode 墙钟、KV 阻塞准入时长、TPOT/ITL 的逐 token 尾延迟、跨层真实提前窗口、权重提前到位比例、强制漏预测补载与端到端 Oracle 预取收益均 **未测量**；没有输出不会被填成零。后续只有修复零 miss 固定开销并观察到目标负载的真实 KV 压力后，才值得实施有限提前窗口的实际 H2D 预取。",
-        "",
-    ]
-    return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1321,6 +1436,7 @@ def main(argv: list[str] | None = None) -> int:
             "numeric": {},
         }
     _save(state_dir / "state.json", state)
+    public = root / "docs/results" / f"decode-decision-{run_id}"
 
     def point(
         mode: str,
@@ -1457,19 +1573,19 @@ def main(argv: list[str] | None = None) -> int:
                 }
         state["status"] = "complete"
         _save(state_dir / "state.json", state)
-        public = root / "docs/results" / f"decode-decision-{run_id}"
-        public.mkdir(parents=True, exist_ok=False)
-        report_module = runpy.run_path(
-            str(root / "src/flexmoe/analysis/decode_oracle_report.py")
-        )
-        report_json, report_markdown = report_module["build_oracle_report"](state)
-        _save(public / "report.json", report_json)
-        (public / "report.md").write_text(report_markdown, encoding="utf-8")
+        _publish_report(root, public, state)
         print(f"Report: {public / 'report.md'}", flush=True)
         return 0
-    except BaseException:
+    except BaseException as exc:
         state["status"] = "failed"
+        state["suite_error_type"] = type(exc).__name__
         _save(state_dir / "state.json", state)
+        try:
+            _publish_report(root, public, state)
+            print(f"Partial report: {public / 'report.md'}", flush=True)
+        except Exception as report_exc:  # noqa: BLE001 - preserve original point failure
+            state["report_error_type"] = type(report_exc).__name__
+            _save(state_dir / "state.json", state)
         raise
 
 

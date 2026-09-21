@@ -117,5 +117,10 @@ probe、greedy token、bit-exact 权重以及非零映射/HtoD/解压证据齐�
 [解码机制运行手册](docs/decode-mechanism-runbook.md) 和
 [服务器执行说明](docs/server-codex-decode-mechanism-prompt.md)。
 
+低并发零 miss 固定开销、稳定 K0/K1、完整 cache replay，以及 Router 后/提前
+1 层/提前 2 层真实 H2D Oracle 使用一键入口
+`GPU_IDS=0,1,2,3 bash scripts/server/run_decode_decision.sh`，详见
+[TP4 低并发与受约束 Oracle 手册](docs/decode-decision.md)。
+
 无需服务器 Codex 的顺序执行、断点恢复与白名单回传见
 [一键实验说明](docs/oneclick-experiments.md)。

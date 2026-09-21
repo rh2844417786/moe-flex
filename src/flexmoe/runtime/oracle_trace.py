@@ -140,7 +140,10 @@ class OracleTrace:
                 }
             )
         last = first + len(rows) // layers - 1
-        digest = logical_sha256 or _digest(canonical)
+        computed_digest = _digest(canonical)
+        if logical_sha256 is not None and logical_sha256 != computed_digest:
+            raise ValueError("logical route SHA-256 differs from canonical rows")
+        digest = computed_digest
         if not isinstance(digest, str) or len(digest) != 64:
             raise ValueError("logical trace SHA-256 is invalid")
         return cls(

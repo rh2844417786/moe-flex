@@ -55,13 +55,62 @@ def state_fixture():
         "numeric": {
             "r-oracle-32-h2": {
                 "throughput": 500.0,
+                "throughput_samples_tokens_s": [490.0, 500.0, 510.0],
+                "throughput_range_tokens_s": {"min": 490.0, "max": 510.0},
                 "actual_kv": 120,
                 "phase_status": "measured",
+                "prefill_wall_time_median_s": 1.25,
+                "decode_wall_time_median_s": 2.5,
+                "identity": {
+                    "commit": "a" * 40,
+                    "input_sha256": "b" * 64,
+                    "context_length": 4096,
+                    "batch_size": 32,
+                    "max_num_seqs": 32,
+                },
+                "request_metrics_per_repetition": [
+                    {
+                        "ttft_s": {
+                            "status": "measured",
+                            "p50": 0.5,
+                            "p95": 0.8,
+                            "p99": 0.9,
+                        },
+                        "request_latency_s": {
+                            "status": "measured",
+                            "p50": 2.0,
+                            "p95": 2.8,
+                            "p99": 3.0,
+                        },
+                        "derived_tpot_s": {
+                            "status": "measured",
+                            "p50": 0.01,
+                            "p95": 0.02,
+                            "p99": 0.03,
+                        },
+                        "itl_s": {
+                            "status": "unavailable",
+                            "reason": "per-token timestamps absent",
+                        },
+                    }
+                ],
                 "oracle_per_repetition": [
                     {
                         "status": "measured",
                         "per_rank": [
-                            {"rank": rank, "ready_before_use_ratio": 0.9}
+                            {
+                                "rank": rank,
+                                "prefetch_loaded_bytes": 100,
+                                "mandatory_loaded_bytes": 120,
+                                "unused_prefetch_bytes": 10,
+                                "lookahead_ms": [1.0, 2.0],
+                                "ready_before_use_ratio": 0.9,
+                                "layer_batch_all_ready_ratio": 0.8,
+                                "exposed_wait_ms_p50": 0.5,
+                                "exposed_wait_ms_p95": 2.0,
+                                "exposed_wait_ms_p99": 2.5,
+                                "fallback_on_demand_count": 1,
+                            }
                             for rank in range(4)
                         ],
                     }
@@ -110,6 +159,44 @@ def test_report_embeds_all_eight_required_sections_and_failures():
     assert "prompt_token_ids" not in encoded
 
 
+def test_report_embeds_point_identity_ranges_phase_latency_and_rank_local_oracle():
+    from flexmoe.analysis.decode_oracle_report import build_oracle_report
+
+    public, markdown = build_oracle_report(state_fixture())
+
+    metrics = public["oracle"]["oracle-32-h2"]
+    assert metrics["identity"]["input_sha256"] == "b" * 64
+    assert metrics["throughput_samples_tokens_s"] == [490.0, 500.0, 510.0]
+    assert metrics["throughput_range_tokens_s"] == {"min": 490.0, "max": 510.0}
+    assert (
+        metrics["oracle_per_repetition"][0]["per_rank"][3]["exposed_wait_ms_p95"] == 2.0
+    )
+    assert "prefill wall" in markdown
+    assert "decode wall" in markdown
+    assert "TTFT p50/p95/p99" in markdown
+    assert "ready-before-use" in markdown
+    assert "exposed wait p50/p95/p99" in markdown
+    assert "unused bytes" in markdown
+    assert "too-early prefetch bytes：`unavailable`" in markdown
+    assert metrics["too_early_prefetch_bytes"]["status"] == "unavailable"
+
+
+def test_report_lists_gate_bounded_decisions_and_never_promotes_profile_throughput():
+    from flexmoe.analysis.decode_oracle_report import build_oracle_report
+
+    state = state_fixture()
+    state["replay_16"].update(
+        current_policy_misses=20,
+        future_aware_misses=10,
+    )
+    public, markdown = build_oracle_report(state)
+
+    assert "runtime-first" in public["decisions"]
+    assert "cache-policy-first" in public["decisions"]
+    assert "结论门槛" in markdown
+    assert public["oracle"]["oracle-32-h2-profile"]["throughput_tokens_s"] is None
+
+
 def test_summary_conflict_repair_requires_three_measured_rows_and_identity():
     from flexmoe.analysis.decode_oracle_report import repair_summary_conflict
 
@@ -129,3 +216,13 @@ repetition,,2,elapsed_s,1.2,complete
     unchanged = repair_summary_conflict(summary, wrong)
     assert unchanged["status"] == "unavailable"
     assert unchanged["repair_status"] == "identity-mismatch"
+
+    duplicate = csv_text + "repetition,,2,elapsed_s,1.2,complete\n"
+    rejected_duplicate = repair_summary_conflict(summary, duplicate)
+    assert rejected_duplicate["status"] == "unavailable"
+    assert rejected_duplicate["repair_status"] == "invalid-repetition-evidence"
+
+    nonfinite = csv_text.replace(",1.1,complete", ",nan,complete")
+    rejected_nonfinite = repair_summary_conflict(summary, nonfinite)
+    assert rejected_nonfinite["status"] == "unavailable"
+    assert rejected_nonfinite["repair_status"] == "invalid-repetition-evidence"

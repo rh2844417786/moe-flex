@@ -97,6 +97,13 @@ def status(value: object) -> str:
     return str(value) if isinstance(value, str) and value in STATUSES else "unavailable"
 
 
+def repair_derived_summary(summary: dict[str, Any], raw_csv: str) -> dict[str, Any]:
+    """Repair only an export status from immutable, identity-matched CSV evidence."""
+    from .decode_oracle_report import repair_summary_conflict
+
+    return repair_summary_conflict(summary, raw_csv)
+
+
 def numbers(raw: object, keys: Sequence[str], *, ints: bool = False) -> dict[str, Any]:
     row = mapping(raw)
     check = integer if ints else number

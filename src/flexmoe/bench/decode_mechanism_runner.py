@@ -11,6 +11,7 @@ import resource
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from hashlib import sha256
+from itertools import pairwise
 from pathlib import Path
 from typing import Any, cast
 
@@ -517,7 +518,15 @@ class DecodeMechanismBackend(ExpertBackend):
         sequences = [row.get("phase_sequence") for row in phases]
         if any(sequence != sequences[0] for sequence in sequences[1:]):
             raise ValueError("per-rank phase sequence differs")
-        if sequences[0] != ["prefill", "decode"]:
+        sequence = sequences[0]
+        if (
+            not isinstance(sequence, list)
+            or len(sequence) < 2
+            or sequence[0] != "prefill"
+            or sequence[-1] != "decode"
+            or any(phase not in ("prefill", "decode") for phase in sequence)
+            or any(left == right for left, right in pairwise(sequence))
+        ):
             raise ValueError("complete prefill/decode phase sequence unavailable")
         samples = [row.get("decode_step_samples") for row in phases]
         if (
@@ -526,6 +535,24 @@ class DecodeMechanismBackend(ExpertBackend):
             or any(value != samples[0] for value in samples[1:])
         ):
             raise ValueError("per-rank phase boundary coverage differs")
+        boundary_names = (
+            "measurement_start_ns",
+            "first_prefill_start_ns",
+            "first_prefill_end_ns",
+            "first_decode_start_ns",
+            "last_decode_end_ns",
+            "synchronized_measurement_end_ns",
+        )
+        for row in phases:
+            boundaries = row.get("boundaries")
+            if not isinstance(boundaries, Mapping):
+                raise TypeError("per-rank phase boundaries unavailable")
+            ordered = [boundaries.get(name) for name in boundary_names]
+            if any(type(value) is not int or value < 0 for value in ordered):
+                raise ValueError("per-rank phase boundaries unavailable")
+            ordered_ints = cast(list[int], ordered)
+            if any(left > right for left, right in pairwise(ordered_ints)):
+                raise ValueError("per-rank phase boundaries unavailable")
         names = (
             "prefill_wall_time_s",
             "decode_wall_time_s",
@@ -546,7 +573,7 @@ class DecodeMechanismBackend(ExpertBackend):
             values[name] = converted
         return {
             "status": "measured",
-            "phase_sequence": sequences[0],
+            "phase_sequence": sequence,
             "decode_step_samples_per_rank": samples[0],
             "max_rank_prefill_wall_time_s": max(values["prefill_wall_time_s"]),
             "max_rank_decode_wall_time_s": max(values["decode_wall_time_s"]),
@@ -556,7 +583,7 @@ class DecodeMechanismBackend(ExpertBackend):
                 {"rank": row["rank"], **dict(phases[index])}
                 for index, row in enumerate(ranked)
             ],
-            "scope": "maximum per-rank monotonic worker wall; rank times never summed",
+            "scope": "maximum per-rank monotonic worker wall; prefill wall ends at first decode, while decode wall spans first through final decode and includes any intervening prefill waves; rank times never summed",
         }
 
     def validate_logical_trace(
@@ -601,14 +628,29 @@ class DecodeMechanismBackend(ExpertBackend):
                     raise ValueError("logical cache trace row is incomplete")
                 filtered.append({field: row[field] for field in fields})
             logical_rows.append(filtered)
-        hashes = [shared.digest_json(rows) for rows in logical_rows]
-        if any(value != hashes[0] for value in hashes[1:]):
+        cache_hashes = [shared.digest_json(rows) for rows in logical_rows]
+        if any(value != cache_hashes[0] for value in cache_hashes[1:]):
             raise ValueError("logical cache trace differs between TP ranks")
+        route_fields = (
+            "step_id",
+            "layer_id",
+            "actual_batch",
+            "actual_expert_ids",
+        )
+        route_rows = [
+            [{field: row[field] for field in route_fields} for row in rows]
+            for rows in logical_rows
+        ]
+        route_hashes = [shared.digest_json(rows) for rows in route_rows]
+        if any(value != route_hashes[0] for value in route_hashes[1:]):
+            raise ValueError("logical route trace differs between TP ranks")
         return {
             "status": "measured",
             "rows": logical_rows[0],
-            "logical_sha256": hashes[0],
-            "rank_sha256": hashes,
+            "logical_sha256": route_hashes[0],
+            "rank_sha256": route_hashes,
+            "cache_trace_sha256": cache_hashes[0],
+            "cache_trace_rank_sha256": cache_hashes,
             "scope": "rank-0 logical routes after exact four-rank agreement; physical timing and bytes remain rank-local",
         }
 
@@ -617,6 +659,8 @@ class DecodeMechanismBackend(ExpertBackend):
         diagnostics: Mapping[str, Any],
         observations: Sequence[Mapping[str, Any]],
     ) -> dict[str, Any]:
+        if self.oracle_trace is None:
+            raise RuntimeError("oracle trace is not configured")
         ranked_diagnostics = shared.worker_rows(
             diagnostics.get("per_rank"), self.config.tensor_parallel_size
         )
@@ -637,6 +681,15 @@ class DecodeMechanismBackend(ExpertBackend):
                 raise ValueError("oracle worker horizon differs")
             if oracle.get("route_mismatch_count") != 0:
                 raise ValueError("oracle route mismatch detected")
+            expected_matches = (
+                self.oracle_trace.step_range[1] - self.oracle_trace.step_range[0] + 1
+            ) * self.oracle_trace.identity["geometry"]["total_layers"]
+            if (
+                oracle.get("route_match_count") != expected_matches
+                or type(oracle.get("trace_unavailable_count")) is not int
+                or oracle["trace_unavailable_count"] < 0
+            ):
+                raise ValueError("oracle bounded trace coverage differs")
             policy = physical.get("policy")
             if not isinstance(policy, Mapping) or (
                 physical.get("resident_hits", 0)

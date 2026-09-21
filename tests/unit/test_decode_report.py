@@ -15,6 +15,22 @@ def write(path, value):
         path.write_text(json.dumps(value))
 
 
+def test_decode_report_repair_is_derived_only_and_identity_checked():
+    summary = {"status": "unavailable", "contract_sha256": "abc"}
+    raw_csv = """kind,rank,repetition,metric,value,status
+identity,,,contract_sha256,abc,measured
+repetition,,0,elapsed_s,1.0,complete
+repetition,,1,elapsed_s,1.1,complete
+repetition,,2,elapsed_s,1.2,complete
+"""
+
+    repaired = report.repair_derived_summary(summary, raw_csv)
+
+    assert repaired["status"] == "measured-repaired"
+    assert repaired["original_status"] == "unavailable"
+    assert repaired["repair_scope"].startswith("derived export status only")
+
+
 def capture():
     row = evidence(profile=True)
     return dict(

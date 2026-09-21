@@ -20,6 +20,14 @@ def test_phase_timeline_separates_prefill_and_decode_without_rank_summing():
     assert result["decode_step_ms_p50"] == pytest.approx(0.002)
     assert result["decode_step_ms_p95"] == pytest.approx(0.002)
     assert result["phase_sequence"] == ["prefill", "decode"]
+    assert result["boundaries"] == {
+        "measurement_start_ns": 1_000,
+        "first_prefill_start_ns": 2_000,
+        "first_prefill_end_ns": 5_000,
+        "first_decode_start_ns": 7_000,
+        "last_decode_end_ns": 9_000,
+        "synchronized_measurement_end_ns": 13_000,
+    }
     assert result["scope"] == (
         "per-rank monotonic worker wall; never summed across TP ranks"
     )

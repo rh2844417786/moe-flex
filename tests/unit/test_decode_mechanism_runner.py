@@ -271,6 +271,8 @@ def test_oracle_cli_passes_trace_horizon_and_forced_omission(tmp_path, monkeypat
 
 
 def test_oracle_trace_identity_is_validated_before_engine_construction(tmp_path):
+    from flexmoe.runtime.oracle_trace import OracleTrace
+
     cfg = replace(config(tmp_path), arm="partial-auto-kv")
     trace_path = tmp_path / "oracle.json.gz"
     backend = module().DecodeMechanismBackend(
@@ -309,13 +311,14 @@ def test_oracle_trace_identity_is_validated_before_engine_construction(tmp_path)
         for step in range(64)
         for layer in range(2)
     ]
+    logical_sha = OracleTrace.from_rows(rows, oracle_identity).logical_sha256
     with gzip.open(trace_path, "wt") as stream:
         json.dump(
             {
                 "artifact_kind": "decode-logical-cache-trace",
                 "oracle_identity": oracle_identity,
                 "rows": rows,
-                "logical_sha256": "e" * 64,
+                "logical_sha256": logical_sha,
             },
             stream,
         )
@@ -325,7 +328,7 @@ def test_oracle_trace_identity_is_validated_before_engine_construction(tmp_path)
     assert backend.oracle_trace is not None
     assert backend.oracle_trace.step_range == (0, 63)
     assert contract["oracle"]["status"] == "validated"
-    assert contract["oracle"]["logical_sha256"] == "e" * 64
+    assert contract["oracle"]["logical_sha256"] == logical_sha
 
     contract["input_sha256"] = "f" * 64
     with pytest.raises(ValueError, match="identity"):
@@ -367,6 +370,8 @@ def test_oracle_worker_validation_requires_routes_fallback_and_physical_bytes(tm
                 "status": "active",
                 "prefetch_horizon": 1,
                 "route_mismatch_count": 0,
+                "route_match_count": 12,
+                "trace_unavailable_count": 0,
                 "forced_omission_count": 0,
                 "forced_fallback_count": 0,
                 "prefetch_loaded_bytes": 48,
@@ -398,6 +403,14 @@ def test_phase_evidence_uses_max_rank_wall_and_rejects_sequence_drift(tmp_path):
                 "decode_step_ms_p50": float(rank + 3),
                 "decode_step_ms_p95": float(rank + 4),
                 "decode_step_samples": 8,
+                "boundaries": {
+                    "measurement_start_ns": 0,
+                    "first_prefill_start_ns": 1,
+                    "first_prefill_end_ns": 2,
+                    "first_decode_start_ns": 3,
+                    "last_decode_end_ns": 4,
+                    "synchronized_measurement_end_ns": 5,
+                },
             },
         }
         for rank in range(4)
@@ -412,6 +425,40 @@ def test_phase_evidence_uses_max_rank_wall_and_rejects_sequence_drift(tmp_path):
     rows[3]["phase_timeline"]["phase_sequence"] = ["decode"]
     with pytest.raises(ValueError, match="phase sequence"):
         backend.validate_phase(rows)
+
+
+def test_phase_evidence_accepts_identical_multiwave_prefill_decode_sequences(tmp_path):
+    backend = module().DecodeMechanismBackend(config(tmp_path))
+    rows = [
+        {
+            "rank": rank,
+            "phase_timeline": {
+                "status": "measured",
+                "phase_sequence": ["prefill", "decode", "prefill", "decode"],
+                "prefill_wall_time_s": float(rank + 1),
+                "decode_wall_time_s": float(rank + 2),
+                "decode_step_ms_p50": float(rank + 3),
+                "decode_step_ms_p95": float(rank + 4),
+                "decode_step_samples": 16,
+                "boundaries": {
+                    "measurement_start_ns": 0,
+                    "first_prefill_start_ns": 1,
+                    "first_prefill_end_ns": 2,
+                    "first_decode_start_ns": 3,
+                    "last_decode_end_ns": 4,
+                    "synchronized_measurement_end_ns": 5,
+                },
+            },
+        }
+        for rank in range(4)
+    ]
+
+    result = backend.validate_phase(rows)
+
+    assert result["status"] == "measured"
+    assert result["phase_sequence"] == ["prefill", "decode", "prefill", "decode"]
+    assert result["max_rank_decode_wall_time_s"] == 5.0
+    assert "intervening prefill" in result["scope"]
 
 
 def test_logical_cache_trace_is_rank0_only_after_four_rank_route_agreement(tmp_path):
@@ -439,6 +486,7 @@ def test_logical_cache_trace_is_rank0_only_after_four_rank_route_agreement(tmp_p
     assert result["rows"] == [trace_row]
     assert len(result["logical_sha256"]) == 64
     assert result["rank_sha256"] == [result["logical_sha256"]] * 4
+    assert len(result["cache_trace_sha256"]) == 64
 
     workers[3]["pool_profile"]["rows"][0]["actual_expert_ids"] = [1, 2]
     with pytest.raises(ValueError, match="logical cache trace differs"):
