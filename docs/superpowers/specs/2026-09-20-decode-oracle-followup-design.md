@@ -1,6 +1,6 @@
 # TP4 低并发卸载、KV 扩容与受约束 Oracle 验证设计
 
-**状态：** 待用户确认  
+**状态：** 用户已批准
 **基线提交：** `55de519d8468a9ba11817b5f4acb076d079be2ce`  
 **执行环境：** 服务器 `/home/jovyan/wangtonghan/moe-flex`，分支 `repro/fluxmoe`，4 × H100，TP4  
 **唯一模型：** `/mnt/public_data/Qwen/Qwen3-Next-80B-A3B-Instruct`  
@@ -148,15 +148,19 @@ C 相对 B 提升 50.12%，抢占从每轮 129–130 次降至 0，但 C 只有 
 - `K_eager_resident_max`；
 - `K_offload_max`。
 
-resident 上限定义为：
+服务基线容量定义为：
 
-`K0 = max(K_native_max, K_eager_resident_max)`。
+`K0 = K_native_max`。
+
+全驻留容量天花板另记为：
+
+`K_resident_ceiling = max(K_native_max, K_eager_resident_max)`。
 
 offload 上限定义为：
 
 `K1 = K_offload_max`。
 
-只有 `K1 - K0` 至少为一个实际 KV block，且三次正式 workload 都保持物理安全余量时，容量门槛才通过。容量计算包括专家 cache、ingress、执行 workspace、trace/Oracle 固定缓冲和其他可见运行时分配；不能只通过初始化。
+只有 `K1 - K_resident_ceiling` 至少为一个实际 KV block，且三次正式 workload 都保持物理安全余量时，独有容量门槛才通过。容量计算包括专家 cache、ingress、执行 workspace、trace/Oracle 固定缓冲和其他可见运行时分配；不能只通过初始化。
 
 同 eager 机制代价比较使用双方均可稳定运行的 `K_pair = min(K_eager_resident_max, K_offload_max)`，避免将一方不可行的 KV 强加给另一方。
 
@@ -164,10 +168,13 @@ offload 上限定义为：
 
 使用当前数据集中业务合理的 4K 上下文，请求总量固定为 64，`max_num_seqs=32`，输出长度固定。只做：
 
-- native resident，使用其稳定 K0 参考；
+- native resident，KV=`K0`；
+- 若 offload 能稳定运行 `K0`，eager offload，KV=`K0`；
+- 若独有容量门槛通过，同一 eager offload，KV=`K1`；
 - eager resident，KV=`K_pair`；
 - eager offload，KV=`K_pair`；
-- 若容量门槛通过，同一 eager offload，KV=`K1`。
+
+前三点构成服务容量收益比较；后两点构成同 eager 模式的机制代价比较。另使用请求数 32、目标 actual decode batch 32 的点验证固定 batch 机制差异；若实际 batch 不稳定，拒绝固定 batch 结论但保留服务结果。
 
 机制比较只接受观测到的 decode batch 分布与目标固定 batch 一致的 repetition；否则拒绝“固定 actual batch”结论，但保留服务负载结果。服务收益比较固定请求和最大并发，允许 scheduler 自然改变 actual batch。
 
