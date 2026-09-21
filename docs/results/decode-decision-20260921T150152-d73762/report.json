@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "decode-oracle-decision-report",
+  "run_id": "20260921T150152-d73762",
+  "commit": "21f1b7a2fd002374889ed86cf02e6b3da0c498ff",
+  "status": "failed",
+  "suite_error_type": "KeyboardInterrupt",
+  "report_error_type": null,
+  "capacity": {},
+  "selected_capacities": {},
+  "zero_miss": {},
+  "mode_decomposition": {
+    "zero_pair": {},
+    "fixed_batch_gates": {},
+    "instrumented_timing": {
+      "zero_offload": {},
+      "trace_16": {},
+      "trace_32": {}
+    }
+  },
+  "service": {
+    "kv_intervention": {},
+    "low_pair": {}
+  },
+  "replay": {
+    "batch_16": {},
+    "batch_32": {}
+  },
+  "oracle": {},
+  "oracle_output_gates": {
+    "batch_16": {},
+    "batch_32": {}
+  },
+  "forced_omission": null,
+  "points": [],
+  "failed_points": [],
+  "decision": "inconclusive",
+  "decisions": [
+    "inconclusive"
+  ],
+  "decision_gates": {
+    "runtime": {
+      "zero_miss": "unavailable",
+      "offload_over_resident": null
+    },
+    "service_native_k0": {
+      "kv_admission_blocked": {},
+      "preemptions_total": null,
+      "recomputed_tokens": {},
+      "no_kv_pressure_proven": false
+    },
+    "replay": {
+      "16": {
+        "status": "unavailable",
+        "future_aware_reduces_misses": false
+      },
+      "32": {
+        "status": "unavailable",
+        "future_aware_reduces_misses": false
+      }
+    },
+    "oracle": {
+      "16": {
+        "output_gate": "unavailable",
+        "h1_over_h0": null,
+        "h2_over_h0": null
+      },
+      "32": {
+        "output_gate": "unavailable",
+        "h1_over_h0": null,
+        "h2_over_h0": null
+      }
+    }
+  },
+  "decision_scope": "ratios and evidence gates are reported without inventing a significance threshold"
+}
