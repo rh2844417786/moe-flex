@@ -181,6 +181,43 @@ if problem_points:
 else:
     lines.append("- No failed or running point was recorded.")
 
+lines.extend(("", "## Structured preflight", ""))
+preflight_written = 0
+for name, point in problem_points:
+    preflight_path = (
+        root / "runs/decode-mechanism" / f"{name}-launcher" / "preflight.json"
+    )
+    if not preflight_path.is_file() or preflight_path.is_symlink():
+        continue
+    try:
+        preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        continue
+    checks = preflight.get("checks")
+    if not isinstance(checks, list):
+        continue
+    lines.extend(
+        (
+            f"### `{sanitize(str(point.get('label', name)))}`",
+            "",
+            f"- Overall: `{preflight.get('ok') if type(preflight.get('ok')) is bool else 'unavailable'}`",
+            "",
+            "| Check | OK | Details |",
+            "|---|---:|---|",
+        )
+    )
+    for raw in checks[:64]:
+        if not isinstance(raw, dict):
+            continue
+        check_name = sanitize(str(raw.get("name", "unavailable")))[:128]
+        ok = raw.get("ok") if type(raw.get("ok")) is bool else "unavailable"
+        details = sanitize(str(raw.get("details", ""))).replace("|", "\\|")[:1000]
+        lines.append(f"| `{check_name}` | `{ok}` | {details} |")
+    lines.append("")
+    preflight_written += 1
+if not preflight_written:
+    lines.append("No structured preflight artifact was available.")
+
 log_candidates = [
     state_dir / "build.stderr.log",
     state_dir / "build.stdout.log",

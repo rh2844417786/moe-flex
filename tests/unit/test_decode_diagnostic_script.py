@@ -47,6 +47,19 @@ def test_diagnostic_script_exports_bounded_sanitized_failure_evidence(tmp_path):
     (launcher / "runner.stdout.log").write_text(
         "engine initialized\nparent process exited\n", encoding="utf-8"
     )
+    (launcher / "preflight.json").write_text(
+        json.dumps(
+            {
+                "ok": False,
+                "checks": [
+                    {"name": "exclusive_gpus", "ok": False, "details": "gpu=0 pid=9"},
+                    {"name": "checkpoint", "ok": True, "details": "41 shards"},
+                ],
+                "environment": {"private": "must-not-export"},
+            }
+        ),
+        encoding="utf-8",
+    )
 
     run = subprocess.run(
         ["bash", str(SCRIPT), "--run-id", run_id],
@@ -69,6 +82,10 @@ def test_diagnostic_script_exports_bounded_sanitized_failure_evidence(tmp_path):
     assert "RuntimeError: failed below $PROJECT_ROOT" in report
     assert "engine initialized" in report
     assert "parent process exited" in report
+    assert "exclusive_gpus" in report
+    assert "gpu=0 pid=9" in report
+    assert "41 shards" in report
+    assert "must-not-export" not in report
     assert "do-not-publish" not in report
     assert "actual_expert_ids" not in report
     assert str(project) not in report
