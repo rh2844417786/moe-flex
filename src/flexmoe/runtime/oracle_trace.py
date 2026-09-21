@@ -48,6 +48,46 @@ class OracleTrace:
     forced_omission: tuple[int, int, int] | None = None
 
     @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> OracleTrace:
+        identity = raw.get("identity")
+        rows = raw.get("rows")
+        if not isinstance(identity, dict) or not isinstance(rows, list):
+            raise TypeError("serialized oracle trace identity or rows are unavailable")
+        actual_rows = [
+            {
+                "step_id": row.get("step_id"),
+                "layer_id": row.get("layer_id"),
+                "actual_batch": row.get("actual_batch"),
+                "actual_expert_ids": row.get("actual_expert_ids"),
+            }
+            for row in rows
+            if isinstance(row, dict)
+        ]
+        if len(actual_rows) != len(rows):
+            raise TypeError("serialized oracle trace row is not an object")
+        trace = cls.from_rows(
+            actual_rows,
+            identity,
+            logical_sha256=raw.get("logical_sha256"),
+        )
+        omission = raw.get("forced_omission")
+        if omission is not None:
+            if (
+                not isinstance(omission, list)
+                or len(omission) != 3
+                or any(type(value) is not int or value < 0 for value in omission)
+            ):
+                raise ValueError("serialized forced omission is invalid")
+            trace = trace.with_forced_omission(
+                step=omission[0], layer=omission[1], expert=omission[2]
+            )
+        for row in rows:
+            key = (row["step_id"], row["layer_id"])
+            if row.get("predicted_expert_ids") != list(trace._predictions[key]):
+                raise ValueError("serialized predicted expert IDs differ")
+        return trace
+
+    @classmethod
     def from_rows(
         cls,
         rows: list[dict[str, Any]],

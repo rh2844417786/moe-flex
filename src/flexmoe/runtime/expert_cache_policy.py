@@ -363,6 +363,11 @@ class ExpertCachePolicy:
             self._touch_lru(key)
         return slot
 
+    def peek(self, layer: int, expert: int) -> int | None:
+        """Read a cache assignment without counters, heat, or recency mutation."""
+        key = self._validate_key(layer, expert)
+        return self._assignments.get(key)
+
     def _touch_lru(self, key: ExpertKey) -> None:
         self._access_serial += 1
         self._access[key] = self._access_serial

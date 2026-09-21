@@ -461,24 +461,29 @@ class DecodeMechanismBackend(ExpertBackend):
         self.scheduler = SchedulerObserver(engine.llm_engine)
         self.scheduler.start()
         self.capture_active = True
+        limits: dict[str, Any] = {
+            **{
+                key: value
+                for key, value in self.geometry.items()
+                if key != "expert_bytes"
+            },
+            "profile": self.profile,
+            "target_batch": self.target_batch,
+            "capture_steps": self.capture_steps,
+            "min_capture_steps": self.min_capture_steps,
+            "trace_budget_bytes": self.trace_budget_bytes,
+            "max_batch": self.config.max_num_seqs,
+            "safety_reserve_bytes": self.safety_reserve_bytes,
+        }
+        if self.oracle_trace is not None:
+            limits.update(
+                oracle_trace=self.oracle_trace.to_dict(),
+                prefetch_horizon=self.prefetch_horizon,
+            )
         starts = shared.worker_rows(
             engine.collective_rpc(
                 "fluxmoe_decode_mechanism",
-                kwargs={
-                    "action": "start",
-                    **{
-                        key: value
-                        for key, value in self.geometry.items()
-                        if key != "expert_bytes"
-                    },
-                    "profile": self.profile,
-                    "target_batch": self.target_batch,
-                    "capture_steps": self.capture_steps,
-                    "min_capture_steps": self.min_capture_steps,
-                    "trace_budget_bytes": self.trace_budget_bytes,
-                    "max_batch": self.config.max_num_seqs,
-                    "safety_reserve_bytes": self.safety_reserve_bytes,
-                },
+                kwargs={"action": "start", **limits},
             ),
             workers,
         )
@@ -603,6 +608,66 @@ class DecodeMechanismBackend(ExpertBackend):
             "logical_sha256": hashes[0],
             "rank_sha256": hashes,
             "scope": "rank-0 logical routes after exact four-rank agreement; physical timing and bytes remain rank-local",
+        }
+
+    def validate_oracle(
+        self,
+        diagnostics: Mapping[str, Any],
+        observations: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        ranked_diagnostics = shared.worker_rows(
+            diagnostics.get("per_rank"), self.config.tensor_parallel_size
+        )
+        ranked_observations = shared.worker_rows(
+            list(observations), self.config.tensor_parallel_size
+        )
+        expert_bytes = self.geometry.get("expert_bytes")
+        if type(expert_bytes) is not int or expert_bytes <= 0:
+            raise ValueError("oracle expert byte geometry unavailable")
+        validated = []
+        for physical, observed in zip(
+            ranked_diagnostics, ranked_observations, strict=True
+        ):
+            oracle = observed.get("oracle")
+            if not isinstance(oracle, Mapping) or oracle.get("status") != "active":
+                raise ValueError("oracle worker evidence unavailable")
+            if oracle.get("prefetch_horizon") != self.prefetch_horizon:
+                raise ValueError("oracle worker horizon differs")
+            if oracle.get("route_mismatch_count") != 0:
+                raise ValueError("oracle route mismatch detected")
+            policy = physical.get("policy")
+            if not isinstance(policy, Mapping) or (
+                physical.get("resident_hits", 0)
+                + policy.get("cache_hits", 0)
+                + policy.get("cache_misses", 0)
+                != physical.get("unique_demands")
+            ):
+                raise ValueError("oracle demand accounting differs")
+            ingress = oracle.get("ingress")
+            if not isinstance(ingress, Mapping):
+                raise TypeError("oracle ingress evidence unavailable")
+            prefetch_bytes = oracle.get("prefetch_loaded_bytes")
+            fallback_count = ingress.get("fallback_on_demand_count")
+            if (
+                type(prefetch_bytes) is not int
+                or prefetch_bytes < 0
+                or type(fallback_count) is not int
+                or fallback_count < 0
+                or physical.get("h2d_bytes")
+                != prefetch_bytes + fallback_count * expert_bytes
+            ):
+                raise ValueError("oracle physical H2D accounting differs")
+            expected_forced = 1 if self.force_omission is not None else 0
+            if (
+                oracle.get("forced_omission_count") != expected_forced
+                or oracle.get("forced_fallback_count") != expected_forced
+            ):
+                raise ValueError("oracle forced omission fallback evidence differs")
+            validated.append({"rank": physical["rank"], **dict(oracle)})
+        return {
+            "status": "measured",
+            "per_rank": validated,
+            "scope": "rank-local physical transfers and waits; never summed across TP ranks",
         }
 
     def _save_capture(
@@ -740,11 +805,18 @@ class DecodeMechanismBackend(ExpertBackend):
             )
         if result.get("phase", {}).get("status") != "measured":
             raise RuntimeError("complete four-rank phase evidence unavailable")
+        if self.oracle_trace is not None:
+            result["oracle"] = self.validate_oracle(
+                result["diagnostics"], result["worker_observations"]
+            )
         self._check_memory(result["memory"])
         actual = self.validate_kv(result["memory"])
         if actual != self.summary["actual_kv"]:
             raise ValueError("KV allocation changed during measured generation")
-        super().validate_repetition(result["diagnostics"], config)
+        if self.oracle_trace is None:
+            super().validate_repetition(result["diagnostics"], config)
+        elif result.get("oracle", {}).get("status") != "measured":
+            raise RuntimeError("complete four-rank oracle evidence unavailable")
 
     def finalize(self, summary: dict[str, Any]) -> None:
         self._check_memory(summary["final_memory"])

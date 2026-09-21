@@ -78,6 +78,18 @@ def test_forced_omission_changes_prediction_once_but_preserves_reference_route()
         original.with_forced_omission(step=10, layer=4, expert=8)
 
 
+def test_oracle_trace_round_trip_preserves_prediction_and_forced_omission():
+    from flexmoe.runtime.oracle_trace import OracleTrace
+
+    original = OracleTrace.from_rows(
+        rows_for_two_steps(), identity()
+    ).with_forced_omission(step=10, layer=4, expert=7)
+    restored = OracleTrace.from_dict(original.to_dict())
+
+    assert restored.to_dict() == original.to_dict()
+    assert restored.future(step=10, layer=3, horizon=1) == (4,)
+
+
 def test_rank0_profile_loader_requires_exact_identity_and_complete_layers(tmp_path):
     from flexmoe.runtime.oracle_trace import OracleTrace
 

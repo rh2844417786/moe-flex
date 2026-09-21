@@ -69,6 +69,7 @@ class DecodeTraceCollector:
         self.selected: list[tuple[int, int]] = []
         self.present: set[tuple[int, int]] = set()
         self.current: dict[str, Any] | None = None
+        self.execution_context: dict[str, Any] | None = None
         self.original: Any = None
         self.original_execute: Any = None
         self.phase_timeline = PhaseTimeline()
@@ -113,6 +114,7 @@ class DecodeTraceCollector:
 
         def execute(*args: Any, **kwargs: Any) -> Any:
             self.current = None
+            self.execution_context = None
             self.phase_step = None
             try:
                 result = self.original_execute(*args, **kwargs)
@@ -160,6 +162,11 @@ class DecodeTraceCollector:
         if phase == "decode":
             self.batch_counts[str(batch)] += 1
         self.current = None
+        self.execution_context = {
+            "step": step,
+            "actual_batch": batch,
+            "phase": phase,
+        }
         self.phase_timeline.record(step=step, phase=phase, actual_batch=batch)
         self.phase_step = step
         if phase != "decode":
@@ -211,9 +218,12 @@ class DecodeTraceCollector:
         self.present.add(key)
 
     def pool_context(self, layer: int) -> dict[str, Any] | None:
-        if not self.active or self.current is None:
+        if not self.active or self.execution_context is None:
             return None
-        return {key: self.current[key] for key in ("step", "actual_batch", "phase")}
+        return {
+            key: self.execution_context[key]
+            for key in ("step", "actual_batch", "phase")
+        }
 
     def status(self) -> dict[str, Any]:
         return {
@@ -338,6 +348,7 @@ class DecodeTraceCollector:
         finally:
             self.buffer = self.ones = self.indices = None
             self.current = None
+            self.execution_context = None
 
 
 class SchedulerObserver:
@@ -444,6 +455,8 @@ def decode_rpc(
     if action == "start" and _COLLECTOR is not None and _COLLECTOR.active:
         return {"rank": rank, **_COLLECTOR.status()}
     if action == "start" and (_COLLECTOR is None or not _COLLECTOR.active):
+        oracle_raw = limits.pop("oracle_trace", None)
+        prefetch_horizon = limits.pop("prefetch_horizon", None)
         if (
             limits.get("profile")
             and getattr(
@@ -455,25 +468,40 @@ def decode_rpc(
                 "detailed decode profile requires explicit eager model execution"
             )
         _COLLECTOR = DecodeTraceCollector(model_runner, **limits)
+    else:
+        oracle_raw = None
+        prefetch_horizon = None
     if _COLLECTOR is None:
         return {"rank": rank, "active": False, "status": "empty"}
     collector = _COLLECTOR
     if action == "start":
         result = collector.start()
         if (
-            collector.profile
-            and os.environ.get("FLUXMOE_ENABLE") == "1"
+            os.environ.get("FLUXMOE_ENABLE") == "1"
             and os.environ.get("FLUXMOE_STORAGE_MODE") == "expert-cache"
         ):
             from flexmoe.runtime.expert_pool import PoolProfileObserver
+            from flexmoe.runtime.oracle_trace import OracleTrace
             from flexmoe.vllm.expert_cache import require_registry
 
             collector.pool = require_registry().pool
-            collector.pool.profile_observer = PoolProfileObserver(
-                collector.pool_context,
-                capacity=collector.capacity * collector.layers,
-                device=collector.device,
-            )
+            if collector.profile:
+                collector.pool.profile_observer = PoolProfileObserver(
+                    collector.pool_context,
+                    capacity=collector.capacity * collector.layers,
+                    device=collector.device,
+                )
+            if oracle_raw is not None:
+                if prefetch_horizon not in (0, 1, 2):
+                    raise ValueError("oracle worker prefetch horizon is invalid")
+                if not isinstance(oracle_raw, dict):
+                    raise TypeError("oracle worker trace is not an object")
+                collector.pool.configure_oracle(
+                    OracleTrace.from_dict(oracle_raw),
+                    horizon=prefetch_horizon,
+                    context=collector.pool_context,
+                    enable_timing=collector.profile,
+                )
     elif action == "stop":
         try:
             # End-of-window synchronization only; never a per-layer timing wait.
@@ -485,6 +513,8 @@ def decode_rpc(
                 and collector.pool.profile_observer is not None
             ):
                 result["pool_profile"] = collector.pool.profile_observer.snapshot()
+            if collector.pool is not None and collector.pool.oracle_trace is not None:
+                result["oracle"] = collector.pool.stats()["oracle"]
         finally:
             collector.restore()
             if collector.pool is not None:

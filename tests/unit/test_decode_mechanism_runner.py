@@ -332,6 +332,59 @@ def test_oracle_trace_identity_is_validated_before_engine_construction(tmp_path)
         backend.validate_pre_engine(contract, tmp_path)
 
 
+def test_oracle_worker_validation_requires_routes_fallback_and_physical_bytes(tmp_path):
+    from test_oracle_trace import identity, rows_for_two_steps
+
+    from flexmoe.runtime.oracle_trace import OracleTrace
+
+    cfg = replace(config(tmp_path), arm="partial-auto-kv")
+    backend = module().DecodeMechanismBackend(
+        cfg,
+        mode="offload",
+        profile_path=tmp_path / "profile.json",
+        oracle_trace_path=tmp_path / "oracle.json.gz",
+        prefetch_horizon=1,
+        target_batch=16,
+    )
+    backend.geometry = {"expert_bytes": 24}
+    backend.oracle_trace = OracleTrace.from_rows(rows_for_two_steps(), identity())
+    diagnostics = {
+        "per_rank": [
+            {
+                "rank": rank,
+                "h2d_bytes": 96,
+                "resident_hits": 0,
+                "unique_demands": 4,
+                "policy": {"cache_hits": 1, "cache_misses": 3},
+            }
+            for rank in range(4)
+        ]
+    }
+    observations = [
+        {
+            "rank": rank,
+            "oracle": {
+                "status": "active",
+                "prefetch_horizon": 1,
+                "route_mismatch_count": 0,
+                "forced_omission_count": 0,
+                "forced_fallback_count": 0,
+                "prefetch_loaded_bytes": 48,
+                "ingress": {"fallback_on_demand_count": 2},
+            },
+        }
+        for rank in range(4)
+    ]
+
+    result = backend.validate_oracle(diagnostics, observations)
+    assert result["status"] == "measured"
+    assert len(result["per_rank"]) == 4
+
+    observations[3]["oracle"]["route_mismatch_count"] = 1
+    with pytest.raises(ValueError, match="route mismatch"):
+        backend.validate_oracle(diagnostics, observations)
+
+
 def test_phase_evidence_uses_max_rank_wall_and_rejects_sequence_drift(tmp_path):
     backend = module().DecodeMechanismBackend(config(tmp_path))
     rows = [

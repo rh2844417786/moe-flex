@@ -152,6 +152,21 @@ def test_target_coverage_can_be_checked_without_profile():
     assert capture.stop()["coverage_status"] == "unreached"
 
 
+def test_unprofiled_collector_exposes_decode_context_for_oracle_pool():
+    runner = PreparedRunner()
+    capture = collector(runner, profile=False)
+    capture.start()
+
+    runner.execute_model(batch=3, phase="decode")
+
+    assert capture.pool_context(1) == {
+        "step": 0,
+        "actual_batch": 3,
+        "phase": "decode",
+    }
+    capture.stop()
+
+
 def test_non_unit_query_lengths_are_not_pure_decode_even_when_sum_matches():
     class Unequal(PreparedRunner):
         def _prepare_inputs(self, **kwargs):
@@ -290,6 +305,68 @@ def test_worker_rpc_gateway_attaches_real_pool_and_restores(monkeypatch):
     ]
     assert result["activation_rows"][0]["histogram"] == [2, 1, 1, 0]
     assert pool.profile_observer is None
+
+
+def test_worker_rpc_configures_unprofiled_oracle_and_returns_rank_stats(monkeypatch):
+    from test_decode_pool_timing import observed_pool
+    from test_expert_cache_runtime import invoke
+    from test_oracle_pool_runtime import SyncTransfer
+
+    from flexmoe.runtime.oracle_trace import OracleTrace
+    from flexmoe.vllm import decode_trace, expert_cache
+    from flexmoe.vllm.bridge import FluxMoEWorkerExtension
+
+    pool, sources = observed_pool()
+    monkeypatch.setattr(expert_cache, "_REGISTRY", SimpleNamespace(pool=pool))
+    monkeypatch.setattr(decode_trace, "_COLLECTOR", None)
+    monkeypatch.setattr(
+        "flexmoe.runtime.expert_pool.CudaOracleTransferBackend",
+        lambda device, enable_timing: SyncTransfer(),
+    )
+    monkeypatch.setenv("FLUXMOE_DECODE_MECHANISM", "1")
+    monkeypatch.setenv("FLUXMOE_ENABLE", "1")
+    monkeypatch.setenv("FLUXMOE_STORAGE_MODE", "expert-cache")
+    trace = OracleTrace.from_rows(
+        [
+            {
+                "step_id": 0,
+                "layer_id": layer,
+                "actual_batch": 2,
+                "actual_expert_ids": [0, 1, 2],
+            }
+            for layer in range(2)
+        ],
+        {
+            "geometry": {"total_layers": 2, "num_experts": 4, "top_k": 2},
+            "actual_batch": 2,
+        },
+    )
+    worker = FluxMoEWorkerExtension()
+    worker.rank = 0
+    worker.model_runner = PreparedRunner()
+    worker.model_runner.model_config = SimpleNamespace(enforce_eager=True)
+
+    worker.fluxmoe_decode_mechanism(
+        "start",
+        total_layers=2,
+        num_experts=4,
+        top_k=2,
+        device="cpu",
+        profile=False,
+        capture_steps=2,
+        min_capture_steps=1,
+        max_batch=4,
+        oracle_trace=trace.to_dict(),
+        prefetch_horizon=1,
+    )
+    worker.model_runner.execute_model(batch=2)
+    for layer in range(2):
+        invoke(pool, sources, layer, [0, 1, 2])
+    result = worker.fluxmoe_decode_mechanism("stop")
+
+    assert result["oracle"]["status"] == "active"
+    assert result["oracle"]["prefetch_horizon"] == 1
+    assert result["oracle"]["route_mismatch_count"] == 0
 
 
 def test_worker_rpc_profile_rejects_graph_mode(monkeypatch):

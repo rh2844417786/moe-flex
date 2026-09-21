@@ -13,6 +13,13 @@ import torch
 
 from flexmoe.runtime.cache_trace import CacheTraceRow
 from flexmoe.runtime.expert_cache_policy import ExpertCachePolicy
+from flexmoe.runtime.oracle_prefetch import (
+    CudaOracleTransferBackend,
+    IngressCapacityError,
+    OracleIngress,
+    OracleTransferBackend,
+)
+from flexmoe.runtime.oracle_trace import OracleTrace
 from flexmoe.runtime.partial_staging import should_sample_upload
 
 
@@ -265,6 +272,11 @@ class ExpertPool:
         self._active = False
         self._failed = False
         self.profile_observer: PoolProfileObserver | None = None
+        self.oracle_trace: OracleTrace | None = None
+        self.oracle_ingress: OracleIngress | None = None
+        self.oracle_context: Callable[[int], dict[str, Any] | None] | None = None
+        self.oracle_horizon: int | None = None
+        self._oracle_stats: dict[str, Any] = {}
         self._loaded_history: set[tuple[int, int]] | None = (
             set() if track_load_history else None
         )
@@ -303,6 +315,129 @@ class ExpertPool:
             self.sources[layer], (self.gather13, self.gather2), strict=True
         ):
             torch.index_select(source, 0, self.host_indices[:n], out=dest[:n])
+
+    def _gather_slots(
+        self, layer: int, ids: Sequence[int], slots: Sequence[int]
+    ) -> None:
+        if len(ids) != len(slots):
+            raise ValueError("oracle gather IDs and slots differ")
+        for expert, slot in zip(ids, slots, strict=True):
+            for source, dest in zip(
+                self.sources[layer], (self.gather13, self.gather2), strict=True
+            ):
+                dest[slot].copy_(source[expert])
+
+    def configure_oracle(
+        self,
+        trace: OracleTrace,
+        *,
+        horizon: int,
+        context: Callable[[int], dict[str, Any] | None],
+        transfer_backend: OracleTransferBackend | None = None,
+        enable_timing: bool = False,
+    ) -> None:
+        if horizon not in (0, 1, 2):
+            raise ValueError("oracle prefetch horizon must be 0, 1, or 2")
+        geometry = trace.identity.get("geometry", {})
+        if (
+            geometry.get("total_layers") != self.total_layers
+            or geometry.get("num_experts") != self.num_experts
+        ):
+            raise ValueError("oracle trace geometry differs from expert pool")
+        backend = transfer_backend
+        if backend is None:
+            backend = CudaOracleTransferBackend(
+                self.backend.device, enable_timing=enable_timing
+            )
+
+        def copies(
+            key: tuple[int, int, int], slot: int
+        ) -> Sequence[tuple[torch.Tensor, torch.Tensor]]:
+            _, layer, expert = key
+            self._gather_slots(layer, (expert,), (slot,))
+            return (
+                (self.w13[self.ingress_start + slot], self.gather13[slot]),
+                (self.w2[self.ingress_start + slot], self.gather2[slot]),
+            )
+
+        self.oracle_trace = trace
+        self.oracle_context = context
+        self.oracle_horizon = horizon
+        self.oracle_ingress = OracleIngress(
+            capacity=self.num_experts,
+            expert_bytes=self.expert_bytes,
+            transfer_backend=backend,
+            copy_factory=copies,
+        )
+        self._oracle_stats = {
+            "status": "active",
+            "prefetch_horizon": horizon,
+            "route_mismatch_count": 0,
+            "forced_omission_count": 0,
+            "forced_fallback_count": 0,
+            "fallback_on_demand_count": 0,
+            "mandatory_loaded_bytes": 0,
+            "prefetch_loaded_bytes": 0,
+            "unused_prefetch_bytes": 0,
+            "lookahead_ms": [],
+        }
+
+    def _oracle_schedule_future(self, *, step: int, layer: int) -> None:
+        if (
+            self.oracle_trace is None
+            or self.oracle_ingress is None
+            or self.oracle_horizon in (None, 0)
+        ):
+            return
+        assert self.oracle_horizon in (1, 2)
+        predicted = self.oracle_trace.future(
+            step=step, layer=layer, horizon=self.oracle_horizon
+        )
+        if predicted is None:
+            return
+        target_layer = layer + self.oracle_horizon
+        candidates = tuple(
+            expert
+            for expert in predicted
+            if self.policy.resident_slot(target_layer, expert) is None
+            and self.policy.peek(target_layer, expert) is None
+        )
+        omission = self.oracle_trace.forced_omission
+        if (
+            omission is not None
+            and omission[:2] == (step, target_layer)
+            and omission[2] not in predicted
+        ):
+            self._oracle_stats["forced_omission_count"] += 1
+        if not candidates:
+            return
+        try:
+            self.oracle_ingress.schedule(
+                step=step,
+                source_layer=layer,
+                target_layer=target_layer,
+                expert_ids=candidates,
+            )
+        except IngressCapacityError:
+            return
+        self._h2d_bytes += len(candidates) * self.expert_bytes
+        self._copy_launches += 2 * len(candidates)
+        self._oracle_stats["prefetch_loaded_bytes"] += (
+            len(candidates) * self.expert_bytes
+        )
+        if self._loaded_history is not None:
+            self._loaded_history.update((target_layer, expert) for expert in candidates)
+
+    def _oracle_context_for_layer(self, layer: int) -> dict[str, Any] | None:
+        if self.oracle_context is None:
+            return None
+        context = self.oracle_context(layer)
+        if context is None or context.get("phase") != "decode":
+            return None
+        step, batch = context.get("step"), context.get("actual_batch")
+        if type(step) is not int or step < 0 or type(batch) is not int or batch <= 0:
+            raise ValueError("oracle decode context is invalid")
+        return context
 
     def reload_residents(self) -> None:
         """Called after checkpoint completeness, before the profiling forward."""
@@ -398,8 +533,65 @@ class ExpertPool:
                         evicted_ids.append(admission[1][1])
                     protected.add((layer, expert))
             ordered = [expert for expert, _ in admissions] + bypasses
-            for i, expert in enumerate(ordered):
-                mapping[expert] = self.ingress_start + i
+            ingress_by_expert: dict[int, int] = {}
+            oracle_context = self._oracle_context_for_layer(layer)
+            oracle_step: int | None = None
+            resolved = None
+            if (
+                self.oracle_trace is not None
+                and self.oracle_ingress is not None
+                and oracle_context is not None
+            ):
+                oracle_step = oracle_context["step"]
+                match = self.oracle_trace.validate_actual(
+                    step=oracle_step, layer=layer, ids=tuple(ids)
+                )
+                if match.status != "match":
+                    self._oracle_stats["route_mismatch_count"] += 1
+                resolved = self.oracle_ingress.resolve(
+                    step=oracle_step, layer=layer, required_ids=misses
+                )
+                for expert in resolved.prefetched_ids:
+                    ingress_by_expert[expert] = self.oracle_ingress.entries[
+                        (oracle_step, layer, expert)
+                    ]
+                fallback = tuple(resolved.fallback_ids)
+                if fallback:
+                    ingress_by_expert.update(
+                        self.oracle_ingress.reserve_on_demand(
+                            step=oracle_step, layer=layer, expert_ids=fallback
+                        )
+                    )
+                ordered = list(fallback)
+                if resolved.ticket is not None:
+                    unused = set(resolved.ticket.expert_ids) - set(
+                        resolved.prefetched_ids
+                    )
+                    self._oracle_stats["unused_prefetch_bytes"] += (
+                        len(unused) * self.expert_bytes
+                    )
+                    self._oracle_stats["lookahead_ms"].append(
+                        (resolved.resolved_ns - resolved.ticket.enqueued_ns) / 1_000_000
+                    )
+                    self._oracle_stats["fallback_on_demand_count"] += len(fallback)
+                    omission = self.oracle_trace.forced_omission
+                    if (
+                        omission is not None
+                        and omission[:2] == (oracle_step, layer)
+                        and omission[2] in fallback
+                    ):
+                        self._oracle_stats["forced_fallback_count"] = (
+                            self._oracle_stats.get("forced_fallback_count", 0) + 1
+                        )
+                self._oracle_stats["mandatory_loaded_bytes"] += (
+                    len(misses) * self.expert_bytes
+                )
+                for expert in misses:
+                    mapping[expert] = self.ingress_start + ingress_by_expert[expert]
+            else:
+                for i, expert in enumerate(ordered):
+                    ingress_by_expert[expert] = i
+                    mapping[expert] = self.ingress_start + i
             cache_state_after = self.policy.trace_snapshot()
             self._timing["policy_cpu_s"] += perf_counter() - t
             if token is not None and observer is not None:
@@ -426,7 +618,14 @@ class ExpertPool:
             n = len(ordered)
             if n:
                 gather_started = perf_counter()
-                self._gather(layer, ordered)
+                if oracle_step is None:
+                    self._gather(layer, ordered)
+                else:
+                    self._gather_slots(
+                        layer,
+                        ordered,
+                        [ingress_by_expert[expert] for expert in ordered],
+                    )
                 gather_elapsed = perf_counter() - gather_started
             else:
                 gather_elapsed = 0.0
@@ -459,12 +658,27 @@ class ExpertPool:
             if token is not None and observer is not None:
                 observer.mark(token)
             if n:
-                for gpu, host in ((self.w13, self.gather13), (self.w2, self.gather2)):
-                    gpu[self.ingress_start : self.ingress_start + n].copy_(
-                        host[:n], non_blocking=True
-                    )
+                if oracle_step is None:
+                    for gpu, host in (
+                        (self.w13, self.gather13),
+                        (self.w2, self.gather2),
+                    ):
+                        gpu[self.ingress_start : self.ingress_start + n].copy_(
+                            host[:n], non_blocking=True
+                        )
+                    self._copy_launches += 2
+                else:
+                    for expert in ordered:
+                        slot = ingress_by_expert[expert]
+                        for gpu, host in (
+                            (self.w13, self.gather13),
+                            (self.w2, self.gather2),
+                        ):
+                            gpu[self.ingress_start + slot].copy_(
+                                host[slot], non_blocking=True
+                            )
+                    self._copy_launches += 2 * n
                 self._h2d_bytes += n * self.expert_bytes
-                self._copy_launches += 2
                 if self._loaded_history is not None:
                     self._loaded_history.update((layer, expert) for expert in ordered)
             if token is not None and observer is not None:
@@ -481,6 +695,8 @@ class ExpertPool:
                 )
                 self._metadata_h2d_bytes += count * 8
             self.backend.uploaded()
+            if oracle_step is not None:
+                self._oracle_schedule_future(step=oracle_step, layer=layer)
             self.backend.mark(1)
             if token is not None and observer is not None:
                 observer.rows[token]["metadata_bytes"] = (
@@ -495,14 +711,23 @@ class ExpertPool:
                 observer.mark(token)
             self._timing["compute_enqueue_s"] += perf_counter() - t
             if count:
-                # Disjoint views, contiguous admission prefix, no GPU gather
-                # allocation whose peak could escape dummy-run KV profiling.
-                for gpu in (self.w13, self.w2):
-                    gpu[self.resident_slots : self.ingress_start].index_copy_(
-                        0,
-                        self.device_indices[:count],
-                        gpu[self.ingress_start : self.ingress_start + count],
-                    )
+                if oracle_step is None:
+                    # Disjoint views, contiguous admission prefix, no GPU gather
+                    # allocation whose peak could escape dummy-run KV profiling.
+                    for gpu in (self.w13, self.w2):
+                        gpu[self.resident_slots : self.ingress_start].index_copy_(
+                            0,
+                            self.device_indices[:count],
+                            gpu[self.ingress_start : self.ingress_start + count],
+                        )
+                else:
+                    for expert, cache_slot in admissions:
+                        ingress_slot = ingress_by_expert[expert]
+                        for gpu in (self.w13, self.w2):
+                            gpu[self.resident_slots + cache_slot].copy_(
+                                gpu[self.ingress_start + ingress_slot],
+                                non_blocking=True,
+                            )
                 self._promotion_bytes += count * self.expert_bytes
             self.backend.mark(3)
             if token is not None and observer is not None:
@@ -511,6 +736,8 @@ class ExpertPool:
                     status="complete", promotion_bytes=count * self.expert_bytes
                 )
             self.backend.end()
+            if oracle_step is not None and self.oracle_ingress is not None:
+                self.oracle_ingress.finish_layer(step=oracle_step, layer=layer)
             self._forwards[layer] += 1
             self._unique_demands += len(ids)
             self._max_unique = max(self._max_unique, len(ids))
@@ -573,12 +800,22 @@ class ExpertPool:
             raise RuntimeError("cannot snapshot an active forward")
         if synchronize:
             self.backend.synchronize()
+            if self.oracle_ingress is not None:
+                self.oracle_ingress.backend.synchronize()
         timing = dict(self._timing)
         cuda_timing = self.backend.timing(reset_timing)
         if reset_timing:
             self._timing = dict.fromkeys(self._timing, 0.0)
         source_bytes = self.total_layers * self.num_experts * self.expert_bytes
         pool_bytes = self.capacity * self.expert_bytes
+        oracle_stats: dict[str, Any] = {"status": "not-requested"}
+        if self.oracle_ingress is not None:
+            ingress_stats = self.oracle_ingress.stats()
+            oracle_stats = {
+                **ingress_stats,
+                **self._oracle_stats,
+                "ingress": ingress_stats,
+            }
         return {
             "schema_version": 1,
             "total_layers": self.total_layers,
@@ -612,6 +849,7 @@ class ExpertPool:
             / self.num_experts,
             "resident_hits": self._resident_hits,
             "policy": self.policy.stats(),
+            "oracle": oracle_stats,
             "timing": {**timing, **cuda_timing},
             "weights_verified": 0,
             "weight_verification_scope": "CUDA parity tests required; no runtime weight D2H verification",

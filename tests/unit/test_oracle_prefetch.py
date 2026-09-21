@@ -26,9 +26,13 @@ class FakeTransfer:
     def wait(self, handle):
         self.waited_handles.append(handle)
         self.ready = True
+        return handle
 
     def elapsed_ms(self, handle):
         return 1.25 if self.ready else None
+
+    def wait_elapsed_ms(self, handle):
+        return 0.75
 
     def synchronize(self):
         self.ready = True
@@ -63,6 +67,9 @@ def test_resolve_waits_only_for_required_not_ready_experts():
     assert backend.waited_handles == [ticket.handle]
     assert resolved.ready_before_use_count == 0
     assert resolved.layer_batch_all_ready is False
+    stats = ingress.stats()
+    assert stats["exposed_wait_ms_p50"] == 0.75
+    assert stats["layer_batch_all_ready_ratio"] == 0.0
 
 
 def test_finish_layer_releases_only_matching_in_use_slots():
@@ -92,3 +99,17 @@ def test_duplicate_schedule_is_rejected_without_aliasing_slots():
     with pytest.raises(ValueError, match="already scheduled"):
         ingress.schedule(step=1, source_layer=0, target_layer=1, expert_ids=(2,))
     assert ingress.free_slots == (1,)
+
+
+def test_on_demand_reservation_uses_free_slots_and_releases_with_layer():
+    from flexmoe.runtime.oracle_prefetch import OracleIngress
+
+    ingress = OracleIngress(
+        capacity=3, expert_bytes=24, transfer_backend=FakeTransfer()
+    )
+    slots = ingress.reserve_on_demand(step=2, layer=4, expert_ids=(1, 3))
+
+    assert slots == {1: 0, 3: 1}
+    assert ingress.free_slots == (2,)
+    ingress.finish_layer(step=2, layer=4)
+    assert ingress.free_slots == (0, 1, 2)
