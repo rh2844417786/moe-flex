@@ -663,7 +663,7 @@ def test_build_is_offline_and_runs_before_any_gpu_point(tmp_path, monkeypatch):
 
 
 def test_report_embeds_the_twelve_rank_level_zero_miss_proofs():
-    from flexmoe.analysis.decode_decision import _markdown
+    from flexmoe.analysis.decode_oracle_report import build_oracle_report
 
     state = {
         "commit": "sha",
@@ -686,6 +686,6 @@ def test_report_embeds_the_twelve_rank_level_zero_miss_proofs():
             ],
         },
     }
-    report = _markdown(state)
+    _, report = build_oracle_report(state)
     assert "| 2 | 3 | 0 | 0 | 0 |" in report
     assert sum("| 0 | 0 | 0 |" in line for line in report.splitlines()) == 12

@@ -13,6 +13,7 @@ import json
 import math
 import os
 import re
+import runpy
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -354,6 +355,7 @@ def point_metrics(summary: dict[str, Any]) -> dict[str, Any]:
             "status": "unavailable",
             "reason": "pinned scheduler statistics do not expose recomputed token counts",
         },
+        "oracle_per_repetition": [],
     }
     phases = [rep.get("phase") for rep in reps]
     phase_fields = (
@@ -382,6 +384,12 @@ def point_metrics(summary: dict[str, Any]) -> dict[str, Any]:
         isinstance(row, dict) for row in request_metrics
     ):
         values["request_metrics_per_repetition"] = request_metrics
+    oracle_metrics = [rep.get("oracle") for rep in reps]
+    if len(oracle_metrics) == len(reps) and all(
+        isinstance(row, dict) and row.get("status") == "measured"
+        for row in oracle_metrics
+    ):
+        values["oracle_per_repetition"] = oracle_metrics
     distributions = []
     for rep in reps:
         obs = rep.get("worker_observations", [])
@@ -1451,7 +1459,12 @@ def main(argv: list[str] | None = None) -> int:
         _save(state_dir / "state.json", state)
         public = root / "docs/results" / f"decode-decision-{run_id}"
         public.mkdir(parents=True, exist_ok=False)
-        (public / "report.md").write_text(_markdown(state), encoding="utf-8")
+        report_module = runpy.run_path(
+            str(root / "src/flexmoe/analysis/decode_oracle_report.py")
+        )
+        report_json, report_markdown = report_module["build_oracle_report"](state)
+        _save(public / "report.json", report_json)
+        (public / "report.md").write_text(report_markdown, encoding="utf-8")
         print(f"Report: {public / 'report.md'}", flush=True)
         return 0
     except BaseException:
