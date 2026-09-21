@@ -423,7 +423,7 @@ class DecodeMechanismBackend(ExpertBackend):
             converted: list[float] = []
             for value in column:
                 if not isinstance(value, (int, float)) or isinstance(value, bool):
-                    raise ValueError(f"per-rank {name} unavailable")
+                    raise TypeError(f"per-rank {name} unavailable")
                 number = float(value)
                 if not math.isfinite(number) or number < 0:
                     raise ValueError(f"per-rank {name} unavailable")
@@ -444,11 +444,83 @@ class DecodeMechanismBackend(ExpertBackend):
             "scope": "maximum per-rank monotonic worker wall; rank times never summed",
         }
 
+    def validate_logical_trace(
+        self, rows: Sequence[Mapping[str, Any]]
+    ) -> dict[str, Any]:
+        ranked = shared.worker_rows(list(rows), self.config.tensor_parallel_size)
+        profiles = [row.get("pool_profile") for row in ranked]
+        if all(profile is None for profile in profiles):
+            return {
+                "status": "not-applicable",
+                "rows": [],
+                "logical_sha256": None,
+                "rank_sha256": [],
+            }
+        if any(not isinstance(profile, Mapping) for profile in profiles):
+            raise ValueError("four-rank pool profile coverage is incomplete")
+        fields = (
+            "step_id",
+            "layer_id",
+            "actual_batch",
+            "actual_expert_ids",
+            "resident_hit_ids",
+            "cache_hit_ids",
+            "miss_ids",
+            "bypass_ids",
+            "admitted_ids",
+            "evicted_ids",
+            "cache_state_before",
+            "cache_state_after",
+            "loaded_bytes",
+        )
+        logical_rows: list[list[dict[str, Any]]] = []
+        for profile in cast(list[Mapping[str, Any]], profiles):
+            raw_rows = profile.get("rows")
+            if not isinstance(raw_rows, list) or any(
+                not isinstance(row, Mapping) for row in raw_rows
+            ):
+                raise ValueError("logical cache trace rows unavailable")
+            filtered = []
+            for row in cast(list[Mapping[str, Any]], raw_rows):
+                if any(field not in row for field in fields):
+                    raise ValueError("logical cache trace row is incomplete")
+                filtered.append({field: row[field] for field in fields})
+            logical_rows.append(filtered)
+        hashes = [shared.digest_json(rows) for rows in logical_rows]
+        if any(value != hashes[0] for value in hashes[1:]):
+            raise ValueError("logical cache trace differs between TP ranks")
+        return {
+            "status": "measured",
+            "rows": logical_rows[0],
+            "logical_sha256": hashes[0],
+            "rank_sha256": hashes,
+            "scope": "rank-0 logical routes after exact four-rank agreement; physical timing and bytes remain rank-local",
+        }
+
     def _save_capture(
         self, raw: object, generation_status: str
     ) -> list[dict[str, Any]]:
         assert self.run_dir is not None
         observations = self._observations(raw)
+        logical = self.validate_logical_trace(
+            shared.worker_rows(raw, self.config.tensor_parallel_size)
+        )
+        if logical["status"] == "measured":
+            atomic_gzip(
+                self.run_dir
+                / f"decode-logical-trace-rep-{self.repetition:03d}.json.gz",
+                diagnostic_artifact(
+                    "decode-logical-cache-trace",
+                    {
+                        **self._labels(),
+                        "generation_status": generation_status,
+                        "repetition": self.repetition,
+                        "contract": self.summary["contract"],
+                        "geometry": self.geometry,
+                        **logical,
+                    },
+                ),
+            )
         for row in shared.worker_rows(raw, self.config.tensor_parallel_size):
             atomic_gzip(
                 self.run_dir

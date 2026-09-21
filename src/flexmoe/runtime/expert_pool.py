@@ -11,6 +11,7 @@ from typing import Any, Protocol
 
 import torch
 
+from flexmoe.runtime.cache_trace import CacheTraceRow
 from flexmoe.runtime.expert_cache_policy import ExpertCachePolicy
 from flexmoe.runtime.partial_staging import should_sample_upload
 
@@ -283,6 +284,8 @@ class ExpertPool:
                 "route_d2h_s",
                 "policy_cpu_s",
                 "host_reuse_wait_s",
+                "weight_gather_cpu_s",
+                "host_map_cpu_s",
                 "host_gather_s",
                 "h2d_enqueue_s",
                 "compute_enqueue_s",
@@ -359,15 +362,19 @@ class ExpertPool:
                 observer.rows[token]["demand_ids"] = ids
             self._timing["route_d2h_s"] += perf_counter() - t
             t = perf_counter()
+            cache_state_before = self.policy.trace_snapshot()
             self.policy.observe(layer, ids)
             mapping = [-1] * self.num_experts
             misses: list[int] = []
+            resident_hit_ids: list[int] = []
+            cache_hit_ids: list[int] = []
             protected: set[tuple[int, int]] = set()
             for expert in ids:
                 slot = self.policy.resident_slot(layer, expert)
                 if slot is not None:
                     mapping[expert] = slot
                     self._resident_hits += 1
+                    resident_hit_ids.append(expert)
                 else:
                     slot = self.policy.lookup(layer, expert)
                     if slot is None:
@@ -375,8 +382,10 @@ class ExpertPool:
                     else:
                         mapping[expert] = self.resident_slots + slot
                         protected.add((layer, expert))
+                        cache_hit_ids.append(expert)
             admissions: list[tuple[int, int]] = []
             bypasses: list[int] = []
+            evicted_ids: list[int] = []
             evictions = 0
             for expert in misses:
                 admission = self.policy.admit(layer, expert, protected)
@@ -385,15 +394,19 @@ class ExpertPool:
                 else:
                     admissions.append((expert, admission[0]))
                     evictions += int(admission[1] is not None)
+                    if admission[1] is not None:
+                        evicted_ids.append(admission[1][1])
                     protected.add((layer, expert))
             ordered = [expert for expert, _ in admissions] + bypasses
             for i, expert in enumerate(ordered):
                 mapping[expert] = self.ingress_start + i
+            cache_state_after = self.policy.trace_snapshot()
             self._timing["policy_cpu_s"] += perf_counter() - t
             if token is not None and observer is not None:
+                assert self._loaded_history is not None
                 first = sum(
                     (layer, expert) not in self._loaded_history for expert in misses
-                )  # type: ignore[operator]
+                )
                 resident_hits = self._resident_hits - resident_before
                 observer.rows[token].update(
                     resident_hits=resident_hits,
@@ -412,10 +425,35 @@ class ExpertPool:
             t = perf_counter()
             n = len(ordered)
             if n:
+                gather_started = perf_counter()
                 self._gather(layer, ordered)
+                gather_elapsed = perf_counter() - gather_started
+            else:
+                gather_elapsed = 0.0
+            self._timing["weight_gather_cpu_s"] += gather_elapsed
+            map_started = perf_counter()
             for expert, slot in enumerate(mapping):
                 self.host_map[expert] = slot
-            self._timing["host_gather_s"] += perf_counter() - t
+            map_elapsed = perf_counter() - map_started
+            self._timing["host_map_cpu_s"] += map_elapsed
+            self._timing["host_gather_s"] += gather_elapsed + map_elapsed
+            if token is not None and observer is not None:
+                trace = CacheTraceRow(
+                    step_id=observer.rows[token]["step"],
+                    layer_id=layer,
+                    actual_batch=observer.rows[token]["actual_batch"],
+                    actual_expert_ids=tuple(ids),
+                    resident_hit_ids=tuple(resident_hit_ids),
+                    cache_hit_ids=tuple(cache_hit_ids),
+                    miss_ids=tuple(misses),
+                    bypass_ids=tuple(bypasses),
+                    admitted_ids=tuple(expert for expert, _ in admissions),
+                    evicted_ids=tuple(sorted(evicted_ids)),
+                    cache_state_before=cache_state_before,
+                    cache_state_after=cache_state_after,
+                    loaded_bytes=n * self.expert_bytes,
+                )
+                observer.rows[token].update(trace.to_dict())
             t = perf_counter()
             self.backend.mark(0)
             if token is not None and observer is not None:

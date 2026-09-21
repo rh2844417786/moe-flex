@@ -211,6 +211,37 @@ def test_phase_evidence_uses_max_rank_wall_and_rejects_sequence_drift(tmp_path):
         backend.validate_phase(rows)
 
 
+def test_logical_cache_trace_is_rank0_only_after_four_rank_route_agreement(tmp_path):
+    backend = module().DecodeMechanismBackend(config(tmp_path))
+    trace_row = {
+        "step_id": 4,
+        "layer_id": 1,
+        "actual_batch": 16,
+        "actual_expert_ids": [1, 3],
+        "resident_hit_ids": [1],
+        "cache_hit_ids": [],
+        "miss_ids": [3],
+        "bypass_ids": [],
+        "admitted_ids": [3],
+        "evicted_ids": [],
+        "cache_state_before": {"resident_ids": [[1]], "slots": [None]},
+        "cache_state_after": {"resident_ids": [[1]], "slots": [[1, 3]]},
+        "loaded_bytes": 24,
+    }
+    workers = [
+        {"rank": rank, "pool_profile": {"rows": [dict(trace_row)]}} for rank in range(4)
+    ]
+
+    result = backend.validate_logical_trace(workers)
+    assert result["rows"] == [trace_row]
+    assert len(result["logical_sha256"]) == 64
+    assert result["rank_sha256"] == [result["logical_sha256"]] * 4
+
+    workers[3]["pool_profile"]["rows"][0]["actual_expert_ids"] = [1, 2]
+    with pytest.raises(ValueError, match="logical cache trace differs"):
+        backend.validate_logical_trace(workers)
+
+
 @pytest.mark.parametrize(
     "mode,profile",
     [("native", False), ("matched-resident", False), ("matched-resident", True)],

@@ -156,6 +156,8 @@ def cache_row(rank=0):
                 "route_d2h_s",
                 "policy_cpu_s",
                 "host_reuse_wait_s",
+                "weight_gather_cpu_s",
+                "host_map_cpu_s",
                 "host_gather_s",
                 "h2d_enqueue_s",
                 "compute_enqueue_s",

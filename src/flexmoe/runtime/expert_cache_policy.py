@@ -161,6 +161,10 @@ class ExpertCachePolicy:
             "access_serial": self._access_serial,
         }
 
+    def trace_snapshot(self) -> dict[str, object]:
+        """Return policy state needed to reproduce decisions, never tensors."""
+        return self.replay_snapshot()
+
     @classmethod
     def from_replay_snapshot(
         cls, raw: dict[str, object], *, policy_override: str | None = None

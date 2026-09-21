@@ -35,6 +35,16 @@ def test_real_pool_first_load_hit_eviction_reload_and_observer_parity():
     assert [r["evictions"] for r in rows] == [0, 1, 1, 0]
     assert [r["bypasses"] for r in rows] == [0, 0, 0, 1]
     assert [r["loaded_bytes"] for r in rows] == [0, 24, 24, 24]
+    assert rows[0]["cpu_timing"]["weight_gather_cpu_s"] == 0
+    assert (
+        rows[0]["cpu_timing"]["host_gather_s"]
+        == rows[0]["cpu_timing"]["host_map_cpu_s"]
+    )
+    for row in rows:
+        assert row["cpu_timing"]["host_gather_s"] == pytest.approx(
+            row["cpu_timing"]["weight_gather_cpu_s"]
+            + row["cpu_timing"]["host_map_cpu_s"]
+        )
     assert rows[0]["cuda_timing"]["status"] == "unavailable"
     assert rows[0]["prefetch_status"] == "not-applicable"
     actual, reference = pool.stats(), plain.stats()
