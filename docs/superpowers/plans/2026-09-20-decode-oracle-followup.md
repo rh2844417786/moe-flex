@@ -556,9 +556,9 @@ def test_decision_plan_contains_only_approved_points():
     plan = build_decision_plan(run_id="r", capacities=capacities(), trace_paths=traces())
     assert [p["label"] for p in plan] == [
         "cal-1024", "cal-4096",
+        "native-auto", "eager-auto", "offload-auto",
         "zero-resident", "zero-offload", "zero-offload-profile",
         "legacy-native", "legacy-eager-resident", "legacy-offload",
-        "native-auto", "eager-auto", "offload-auto",
         "mechanism-native-32", "mechanism-eager-32", "mechanism-offload-32",
         "service-native-k0", "service-offload-k0", "service-eager-kpair", "service-offload-kpair",
         "trace-16", "trace-32",

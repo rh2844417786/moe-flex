@@ -451,6 +451,8 @@ class DecodeMechanismBackend(ExpertBackend):
                 Path(__file__),
                 Path(__file__).parents[1] / "vllm" / "decode_trace.py",
                 Path(__file__).parents[1] / "runtime" / "expert_pool.py",
+                Path(__file__).parents[1] / "runtime" / "oracle_trace.py",
+                Path(__file__).parents[1] / "runtime" / "oracle_prefetch.py",
             )
         }
         self._check_memory(summary["memory"])
@@ -994,7 +996,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     backend = DecodeMechanismBackend(config, **args)
     shared.run_benchmark(config, project_root=root, run_dir=run, backend=backend)
-    if backend.mode == "offload" and backend.profile:
+    if (
+        backend.mode == "offload"
+        and backend.profile
+        and backend.oracle_trace_path is None
+    ):
         saved = shared.read_json(run / "summary.json")
         save_cache_replays(run, saved["contract"]["commit"])
     print(run.name)

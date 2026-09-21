@@ -345,6 +345,15 @@ def point_metrics(summary: dict[str, Any]) -> dict[str, Any]:
         "prefill_wall_time_median_s": None,
         "decode_wall_time_median_s": None,
         "request_metrics_per_repetition": [],
+        "kv_admission_blocked": {
+            "status": "unavailable",
+            "reason": "waiting-request samples do not expose a direct KV allocation block reason",
+        },
+        "swap_outs": {"status": "policy-disabled", "measured_count": None},
+        "recomputed_tokens": {
+            "status": "unavailable",
+            "reason": "pinned scheduler statistics do not expose recomputed token counts",
+        },
     }
     phases = [rep.get("phase") for rep in reps]
     phase_fields = (
@@ -435,6 +444,48 @@ def point_metrics(summary: dict[str, Any]) -> dict[str, Any]:
                 for rank in range(4)
             ]
     return values
+
+
+def fixed_actual_batch_gate(summary: dict[str, Any], *, target: int) -> dict[str, Any]:
+    if target not in (16, 32):
+        raise ValueError("fixed actual batch target must be 16 or 32")
+    repetitions = summary.get("repetitions")
+    if (
+        summary.get("status") != "complete"
+        or summary.get("repetitions_completed") != 3
+        or not isinstance(repetitions, list)
+        or len(repetitions) != 3
+    ):
+        return {"status": "rejected", "reason": "incomplete-repetitions"}
+    per_repetition = []
+    for repetition, row in enumerate(repetitions):
+        observations = row.get("worker_observations")
+        if (
+            not isinstance(observations, list)
+            or len(observations) != 4
+            or {item.get("rank") for item in observations} != set(range(4))
+        ):
+            return {"status": "rejected", "reason": "incomplete-rank-coverage"}
+        distributions = [item.get("decode_batch_step_counts") for item in observations]
+        if (
+            any(value != distributions[0] for value in distributions[1:])
+            or not isinstance(distributions[0], dict)
+            or set(distributions[0]) != {str(target)}
+            or type(distributions[0][str(target)]) is not int
+            or distributions[0][str(target)] <= 0
+        ):
+            return {
+                "status": "rejected",
+                "reason": "decode-batch-distribution-differs",
+            }
+        per_repetition.append(
+            {"repetition": repetition, "decode_steps": distributions[0][str(target)]}
+        )
+    return {
+        "status": "measured",
+        "target_actual_batch": target,
+        "per_repetition": per_repetition,
+    }
 
 
 def aggregate_replay(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -570,6 +621,10 @@ def point_arguments(
     resident_ratio: str = "0.8",
     output_length: int = 256,
     capture_steps: int = 64,
+    target_batch: int | None = None,
+    oracle_trace_path: str | None = None,
+    prefetch_horizon: int | None = None,
+    force_omission: str | None = None,
 ) -> dict[str, Any]:
     if mode not in ("calibrate", "native", "matched-resident", "offload"):
         raise ValueError("unsupported point mode")
@@ -626,14 +681,35 @@ def point_arguments(
         argv.extend(("--kv-bytes", str(kv_bytes)))
     if mode == "offload":
         argv.extend(("--resident-ratio", resident_ratio, "--cache-slots", "512"))
+    if target_batch is not None:
+        if target_batch not in (1, 16, 32):
+            raise ValueError("target_batch must be 1, 16, or 32")
+        argv.extend(("--target-batch", str(target_batch)))
+    if (oracle_trace_path is None) != (prefetch_horizon is None):
+        raise ValueError("oracle trace and horizon must be provided together")
+    if oracle_trace_path is not None:
+        if mode != "offload" or prefetch_horizon not in (0, 1, 2):
+            raise ValueError("oracle points require offload horizon 0, 1, or 2")
+        if target_batch not in (16, 32):
+            raise ValueError("oracle points require target batch 16 or 32")
+        argv.extend(
+            (
+                "--oracle-trace",
+                oracle_trace_path,
+                "--prefetch-horizon",
+                str(prefetch_horizon),
+            )
+        )
+    if force_omission is not None:
+        if oracle_trace_path is None or prefetch_horizon not in (1, 2):
+            raise ValueError("forced omission requires oracle horizon 1 or 2")
+        argv.extend(("--force-omission", force_omission))
     if profile:
         if mode not in ("matched-resident", "offload"):
             raise ValueError("native profiling is not supported")
         argv.extend(
             (
                 "--profile",
-                "--target-batch",
-                str(batch),
                 "--capture-steps",
                 str(capture_steps),
                 "--min-capture-steps",
@@ -641,6 +717,259 @@ def point_arguments(
             )
         )
     return {"name": name, "mode": mode, "argv": argv}
+
+
+def build_decision_plan(
+    *,
+    run_id: str,
+    capacities: dict[str, int],
+    trace_paths: dict[int, str],
+    forced_omission: str = "0:1:0",
+) -> list[dict[str, Any]]:
+    validate_run_id(run_id)
+    required = (
+        "native_kv",
+        "eager_kv",
+        "offload_kv",
+        "resident_ceiling",
+        "k_pair",
+        "legacy_kv",
+        "kv_block_bytes",
+    )
+    if any(
+        type(capacities.get(key)) is not int or capacities[key] <= 0 for key in required
+    ):
+        raise ValueError("complete positive capacity selection is required")
+    if set(trace_paths) != {16, 32} or any(not value for value in trace_paths.values()):
+        raise ValueError("batch 16 and 32 trace paths are required")
+    points: list[dict[str, Any]] = []
+
+    def add(
+        label: str,
+        mode: str,
+        context: int,
+        kv: int | None,
+        batch: int,
+        **options: Any,
+    ) -> None:
+        profile_context = 1024 if context == 1024 else 4096
+        point = point_arguments(
+            mode,
+            f"{run_id}-{label}",
+            context,
+            kv,
+            batch,
+            {
+                "profile_path": f"runs/decode-mechanism/{run_id}-cal-{profile_context}/profile.json"
+            },
+            **options,
+        )
+        points.append({"label": label, "status": "planned", **point})
+
+    add("cal-1024", "calibrate", 1024, None, 32, output_length=8)
+    add("cal-4096", "calibrate", 4096, None, 32, output_length=8)
+    add("native-auto", "native", 4096, None, 1)
+    add("eager-auto", "matched-resident", 4096, None, 1)
+    add("offload-auto", "offload", 4096, None, 1)
+    add("zero-resident", "matched-resident", 1024, capacities["k_pair"], 1)
+    add(
+        "zero-offload",
+        "offload",
+        1024,
+        capacities["k_pair"],
+        1,
+        resident_ratio="0.9",
+    )
+    add(
+        "zero-offload-profile",
+        "offload",
+        1024,
+        capacities["k_pair"],
+        1,
+        resident_ratio="0.9",
+        profile=True,
+        target_batch=1,
+    )
+    for label, mode in (
+        ("legacy-native", "native"),
+        ("legacy-eager-resident", "matched-resident"),
+        ("legacy-offload", "offload"),
+    ):
+        add(
+            label,
+            mode,
+            4096,
+            capacities["legacy_kv"],
+            32,
+            target_batch=32,
+        )
+    add(
+        "mechanism-native-32",
+        "native",
+        4096,
+        capacities["native_kv"],
+        32,
+        target_batch=32,
+    )
+    add(
+        "mechanism-eager-32",
+        "matched-resident",
+        4096,
+        capacities["k_pair"],
+        32,
+        target_batch=32,
+    )
+    add(
+        "mechanism-offload-32",
+        "offload",
+        4096,
+        capacities["k_pair"],
+        32,
+        target_batch=32,
+    )
+    add("service-native-k0", "native", 4096, capacities["native_kv"], 64)
+    if capacities["offload_kv"] >= capacities["native_kv"]:
+        add("service-offload-k0", "offload", 4096, capacities["native_kv"], 64)
+    else:
+        points.append(
+            {
+                "label": "service-offload-k0",
+                "name": f"{run_id}-service-offload-k0",
+                "mode": "offload",
+                "status": "skipped",
+                "reason": "offload-cannot-run-native-k0",
+                "argv": [],
+            }
+        )
+    if (
+        capacities["offload_kv"] - capacities["resident_ceiling"]
+        >= capacities["kv_block_bytes"]
+    ):
+        add("service-offload-k1", "offload", 4096, capacities["offload_kv"], 64)
+    else:
+        points.append(
+            {
+                "label": "service-offload-k1",
+                "name": f"{run_id}-service-offload-k1",
+                "mode": "offload",
+                "status": "skipped",
+                "reason": "offload-kv-does-not-exceed-resident-ceiling",
+                "argv": [],
+            }
+        )
+    add(
+        "service-eager-kpair",
+        "matched-resident",
+        4096,
+        capacities["k_pair"],
+        64,
+    )
+    add("service-offload-kpair", "offload", 4096, capacities["k_pair"], 64)
+    for batch in (16, 32):
+        add(
+            f"trace-{batch}",
+            "offload",
+            4096,
+            capacities["k_pair"],
+            batch,
+            profile=True,
+            target_batch=batch,
+        )
+    for batch in (16, 32):
+        for horizon in (0, 1, 2):
+            add(
+                f"oracle-{batch}-h{horizon}",
+                "offload",
+                4096,
+                capacities["k_pair"],
+                batch,
+                target_batch=batch,
+                oracle_trace_path=trace_paths[batch],
+                prefetch_horizon=horizon,
+            )
+        for horizon in (0, 1, 2):
+            add(
+                f"oracle-{batch}-h{horizon}-profile",
+                "offload",
+                4096,
+                capacities["k_pair"],
+                batch,
+                profile=True,
+                target_batch=batch,
+                oracle_trace_path=trace_paths[batch],
+                prefetch_horizon=horizon,
+            )
+    add(
+        "oracle-forced-omission",
+        "offload",
+        4096,
+        capacities["k_pair"],
+        32,
+        profile=True,
+        target_batch=32,
+        oracle_trace_path=trace_paths[32],
+        prefetch_horizon=1,
+        force_omission=forced_omission,
+    )
+    return points
+
+
+def derive_forced_omission(path: Path) -> str:
+    with gzip.open(path, "rt", encoding="utf-8") as stream:
+        artifact = json.load(stream)
+    if artifact.get("artifact_kind") != "decode-logical-cache-trace":
+        raise ValueError("forced omission requires a logical cache trace")
+    rows = artifact.get("rows")
+    if not isinstance(rows, list):
+        raise TypeError("logical cache trace rows are unavailable")
+    for row in rows:
+        if not isinstance(row, dict):
+            raise TypeError("logical cache trace row is not an object")
+        step, layer, ids = (
+            row.get("step_id"),
+            row.get("layer_id"),
+            row.get("actual_expert_ids"),
+        )
+        if (
+            type(step) is int
+            and step >= 0
+            and type(layer) is int
+            and layer > 0
+            and isinstance(ids, list)
+            and ids
+            and all(type(expert) is int and expert >= 0 for expert in ids)
+        ):
+            return f"{step}:{layer}:{ids[0]}"
+    raise ValueError("logical trace has no nonfirst-layer expert to omit")
+
+
+def oracle_output_gate(runs: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    required = ("h0", "h1", "h2", "forced")
+    if set(runs) != set(required):
+        return {"status": "incomplete-evidence", "reason": "oracle-runs-missing"}
+    hashes: dict[str, list[str]] = {}
+    for label in required:
+        run = runs[label]
+        repetitions = run.get("repetitions")
+        if (
+            run.get("status") != "complete"
+            or run.get("repetitions_completed") != 3
+            or not isinstance(repetitions, list)
+            or len(repetitions) != 3
+            or any(not isinstance(row.get("output_sha256"), str) for row in repetitions)
+        ):
+            return {
+                "status": "incomplete-evidence",
+                "reason": f"{label}-repetitions-incomplete",
+            }
+        hashes[label] = [row["output_sha256"] for row in repetitions]
+    baseline = hashes["h0"]
+    matches = all(values == baseline for values in hashes.values())
+    return {
+        "status": "outputs-match" if matches else "output-mismatch",
+        "per_run_output_sha256": hashes,
+        "scope": "three greedy repetitions per horizon; forced omission must match horizon 0",
+    }
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -695,12 +1024,25 @@ def build_image(
     root: Path, state_dir: Path, state: dict[str, Any], commit: str
 ) -> None:
     """Build the exact committed image without using the server network."""
+    existing = state.get("build")
+    if isinstance(existing, dict) and existing.get("status") == "complete":
+        if existing.get("source_sha") != commit:
+            raise RuntimeError("completed image build belongs to another commit")
+        metadata = (root / "build/image.env").read_text(encoding="utf-8").splitlines()
+        if (
+            f"GIT_SHA={commit}" not in metadata
+            or f"IMAGE=moe-flex-local:{commit}" not in metadata
+        ):
+            raise RuntimeError("completed image metadata differs from checkout")
+        return
+    if isinstance(existing, dict) and existing.get("status") in ("running", "failed"):
+        raise RuntimeError("incomplete image build requires a fresh suite ID")
     state["build"] = {"status": "running", "source_sha": commit}
     _save(state_dir / "state.json", state)
     try:
         with (
-            (state_dir / "build.stdout.log").open("w") as stdout,
-            (state_dir / "build.stderr.log").open("w") as stderr,
+            (state_dir / "build.stdout.log").open("x") as stdout,
+            (state_dir / "build.stderr.log").open("x") as stderr,
         ):
             result = subprocess.run(
                 ["bash", "scripts/server/build.sh"],
@@ -1015,61 +1357,96 @@ def main(argv: list[str] | None = None) -> int:
                 "capacity point incomplete; no budget selection possible"
             )
         state["budgets"] = select_budgets(resident_auto, eager_auto, offload_auto)
-        native_kv = state["budgets"]["native_kv"]
-        matched_kv = state["budgets"]["matched_eager_kv"]
-        _save(state_dir / "state.json", state)
-        zero_resident = point("matched-resident", "zero-resident", 1024, matched_kv, 1)
-        zero_offload = point(
-            "offload", "zero-offload", 1024, matched_kv, 1, ratio="0.9"
-        )
-        state["zero_miss"] = zero_miss_gate(zero_offload)
-        state["zero_pair"] = compare_pair(zero_resident, zero_offload)
-        # Profiles are separate, non-timing evidence. Never include them in the measured pair.
-        point(
-            "matched-resident",
-            "zero-resident-profile",
-            1024,
-            matched_kv,
-            1,
-            profile=True,
-        )
-        state["zero_timing_resident"] = profile_timing_point(
-            root, f"{run_id}-zero-resident-profile"
-        )
-        _save(state_dir / "state.json", state)
-        point(
-            "offload",
-            "zero-offload-profile",
-            1024,
-            matched_kv,
-            1,
-            profile=True,
-            ratio="0.9",
-        )
-        state["zero_timing_offload"] = profile_timing_point(
-            root, f"{run_id}-zero-offload-profile"
-        )
-        _save(state_dir / "state.json", state)
-        point("native", "low-native", 4096, native_kv, 64)
-        low_resident = point("matched-resident", "low-resident", 4096, matched_kv, 64)
-        low_offload = point("offload", "low-offload", 4096, matched_kv, 64)
-        state["low_pair"] = compare_pair(low_resident, low_offload)
-        if state["budgets"]["offload_extra_kv"] is not None:
-            low_extra = point(
-                "offload",
-                "low-extra-kv",
-                4096,
-                state["budgets"]["offload_extra_kv"],
-                64,
+        native_kv, native_block = _actual_kv(resident_auto)
+        eager_kv, eager_block = _actual_kv(eager_auto)
+        offload_kv, offload_block = _actual_kv(offload_auto)
+        capacities = {
+            "native_kv": native_kv,
+            "eager_kv": eager_kv,
+            "offload_kv": offload_kv,
+            "resident_ceiling": max(native_kv, eager_kv),
+            "k_pair": min(eager_kv, offload_kv),
+            "legacy_kv": 32_815_054_848,
+            "kv_block_bytes": max(native_block, eager_block, offload_block),
+        }
+        trace_paths = {
+            batch: (
+                f"runs/decode-mechanism/{run_id}-trace-{batch}/"
+                "decode-logical-trace-rep-000.json.gz"
             )
-            state["kv_intervention"] = compare_offload_kv(low_offload, low_extra)
-        point("offload", "trace-16", 4096, matched_kv, 16, profile=True)
-        state["trace_timing_16"] = profile_timing_point(root, f"{run_id}-trace-16")
-        state["replay_16"] = analyze_trace_point(root, f"{run_id}-trace-16", commit)
+            for batch in (16, 32)
+        }
+        plan = build_decision_plan(
+            run_id=run_id,
+            capacities=capacities,
+            trace_paths=trace_paths,
+        )
+        state["selected_capacities"] = capacities
+        state["point_plan"] = plan
+        completed: dict[str, dict[str, Any]] = {
+            "native-auto": resident_auto,
+            "eager-auto": eager_auto,
+            "offload-auto": offload_auto,
+        }
         _save(state_dir / "state.json", state)
-        point("offload", "trace-32", 4096, matched_kv, 32, profile=True)
-        state["trace_timing_32"] = profile_timing_point(root, f"{run_id}-trace-32")
-        state["replay_32"] = analyze_trace_point(root, f"{run_id}-trace-32", commit)
+
+        for spec in plan:
+            label, name = spec["label"], spec["name"]
+            if spec["status"] == "skipped":
+                state["points"].setdefault(name, dict(spec))
+                _save(state_dir / "state.json", state)
+                continue
+            if label == "oracle-forced-omission":
+                omission = derive_forced_omission(root / trace_paths[32])
+                index = spec["argv"].index("--force-omission")
+                spec["argv"][index + 1] = omission
+                state["forced_omission"] = omission
+            result = _run_point(root, state_dir, state, spec, args.timeout_s)
+            completed[label] = result
+            if spec["mode"] != "calibrate":
+                state["numeric"][name] = point_metrics(result)
+            if label.startswith("mechanism-"):
+                state.setdefault("fixed_batch_gates", {})[label] = (
+                    fixed_actual_batch_gate(result, target=32)
+                )
+            if label == "zero-offload":
+                state["zero_miss"] = zero_miss_gate(result)
+                state["zero_pair"] = compare_pair(completed["zero-resident"], result)
+            if label == "zero-offload-profile":
+                state["zero_timing_offload"] = profile_timing_point(root, name)
+            if label == "service-offload-kpair":
+                state["low_pair"] = compare_pair(
+                    completed["service-eager-kpair"], result
+                )
+            if label == "service-offload-k1" and "service-offload-k0" in completed:
+                state["kv_intervention"] = compare_offload_kv(
+                    completed["service-offload-k0"], result
+                )
+            if label in ("trace-16", "trace-32"):
+                batch = int(label.rsplit("-", 1)[1])
+                state[f"trace_timing_{batch}"] = profile_timing_point(root, name)
+                state[f"replay_{batch}"] = analyze_trace_point(root, name, commit)
+            _save(state_dir / "state.json", state)
+
+        for batch in (16, 32):
+            horizon_runs = {
+                f"h{horizon}": completed[f"oracle-{batch}-h{horizon}"]
+                for horizon in (0, 1, 2)
+            }
+            if batch == 32:
+                horizon_runs["forced"] = completed["oracle-forced-omission"]
+                state["oracle_output_gate_32"] = oracle_output_gate(horizon_runs)
+            else:
+                hashes = {
+                    label: [row["output_sha256"] for row in run["repetitions"]]
+                    for label, run in horizon_runs.items()
+                }
+                state["oracle_output_gate_16"] = {
+                    "status": "outputs-match"
+                    if hashes["h0"] == hashes["h1"] == hashes["h2"]
+                    else "output-mismatch",
+                    "per_run_output_sha256": hashes,
+                }
         state["status"] = "complete"
         _save(state_dir / "state.json", state)
         public = root / "docs/results" / f"decode-decision-{run_id}"

@@ -610,6 +610,36 @@ def test_wrapper_container_recorder_preserves_literal_arguments_and_timeout(tmp_
     assert args[args.index("--kv-bytes") + 1] == "1234"
 
 
+def test_wrapper_preserves_oracle_trace_horizon_and_omission_arguments(tmp_path):
+    scripts = tmp_path / "scripts/server"
+    scripts.mkdir(parents=True)
+    recorder = scripts / "run_container.sh"
+    recorder.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n')
+    result = shell(
+        'decode_root="$1"; shift; decode_mode=offload; decode_parse "$@"; '
+        'decode_run="$decode_root/runs/decode-mechanism/abc"; decode_run_gpu',
+        tmp_path,
+        "--run-id",
+        "abc",
+        "--profile-path",
+        "profile.json",
+        "--oracle-trace",
+        "runs/trace 16.json.gz",
+        "--prefetch-horizon",
+        "2",
+        "--force-omission",
+        "5:7:12",
+        "--target-batch",
+        "16",
+    )
+
+    assert result.returncode == 0, result.stderr
+    args = result.stdout.splitlines()
+    assert args[args.index("--oracle-trace") + 1] == "runs/trace 16.json.gz"
+    assert args[args.index("--prefetch-horizon") + 1] == "2"
+    assert args[args.index("--force-omission") + 1] == "5:7:12"
+
+
 @pytest.mark.parametrize(
     "flag",
     [

@@ -39,7 +39,7 @@ decode_parse() {
           echo "detailed profiles require matched-resident or offload" >&2; return 3
         fi
         decode_args+=("$1"); shift ;;
-      --profile-path|--target-batch|--kv-bytes|--capture-steps|--min-capture-steps|--trace-budget-bytes|--safety-reserve-bytes|--selection-offset|--smoke-output-length)
+      --profile-path|--target-batch|--kv-bytes|--capture-steps|--min-capture-steps|--trace-budget-bytes|--safety-reserve-bytes|--selection-offset|--smoke-output-length|--oracle-trace|--prefetch-horizon|--force-omission)
         if [[ "${decode_mode}" == calibrate ]]; then echo "calibration output and scope are wrapper-owned" >&2; return 3; fi
         decode_args+=("$1" "${2:?flag value required}"); shift 2 ;;
       --dataset-path|--dataset-manifest|--gpu-memory-utilization|--batch-size|--context-length|--output-length|--max-num-seqs|--max-num-batched-tokens|--warmups|--repetitions|--seed|--resident-ratio|--cache-slots|--cache-policy|--calibration-count)

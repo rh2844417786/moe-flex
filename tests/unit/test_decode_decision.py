@@ -185,6 +185,148 @@ def test_selected_points_keep_low_concurrency_and_matched_work():
     assert offload["argv"][offload["argv"].index("--resident-ratio") + 1] == "0.9"
 
 
+def test_decision_plan_contains_only_approved_points_and_horizons():
+    from flexmoe.analysis.decode_decision import build_decision_plan
+
+    plan = build_decision_plan(
+        run_id="r",
+        capacities={
+            "native_kv": 1_000,
+            "eager_kv": 900,
+            "offload_kv": 1_200,
+            "resident_ceiling": 1_000,
+            "k_pair": 900,
+            "legacy_kv": 32_815_054_848,
+            "kv_block_bytes": 100,
+        },
+        trace_paths={16: "runs/r-trace-16.json.gz", 32: "runs/r-trace-32.json.gz"},
+    )
+    labels = [point["label"] for point in plan]
+
+    assert labels == [
+        "cal-1024",
+        "cal-4096",
+        "native-auto",
+        "eager-auto",
+        "offload-auto",
+        "zero-resident",
+        "zero-offload",
+        "zero-offload-profile",
+        "legacy-native",
+        "legacy-eager-resident",
+        "legacy-offload",
+        "mechanism-native-32",
+        "mechanism-eager-32",
+        "mechanism-offload-32",
+        "service-native-k0",
+        "service-offload-k0",
+        "service-offload-k1",
+        "service-eager-kpair",
+        "service-offload-kpair",
+        "trace-16",
+        "trace-32",
+        "oracle-16-h0",
+        "oracle-16-h1",
+        "oracle-16-h2",
+        "oracle-16-h0-profile",
+        "oracle-16-h1-profile",
+        "oracle-16-h2-profile",
+        "oracle-32-h0",
+        "oracle-32-h1",
+        "oracle-32-h2",
+        "oracle-32-h0-profile",
+        "oracle-32-h1-profile",
+        "oracle-32-h2-profile",
+        "oracle-forced-omission",
+    ]
+    allowed_request_counts = {1, 16, 32, 64}
+    for point in plan:
+        argv = point["argv"]
+        assert int(argv[argv.index("--batch-size") + 1]) in allowed_request_counts
+        if "--prefetch-horizon" in argv:
+            assert int(argv[argv.index("--prefetch-horizon") + 1]) in (0, 1, 2)
+
+
+def test_decision_plan_skips_k1_when_offload_does_not_exceed_resident_ceiling():
+    from flexmoe.analysis.decode_decision import build_decision_plan
+
+    plan = build_decision_plan(
+        run_id="r",
+        capacities={
+            "native_kv": 1_000,
+            "eager_kv": 1_100,
+            "offload_kv": 1_050,
+            "resident_ceiling": 1_100,
+            "k_pair": 1_050,
+            "legacy_kv": 32_815_054_848,
+            "kv_block_bytes": 100,
+        },
+        trace_paths={16: "trace16", 32: "trace32"},
+    )
+    k1 = [point for point in plan if point["label"] == "service-offload-k1"]
+
+    assert k1 == [
+        {
+            "label": "service-offload-k1",
+            "name": "r-service-offload-k1",
+            "mode": "offload",
+            "status": "skipped",
+            "reason": "offload-kv-does-not-exceed-resident-ceiling",
+            "argv": [],
+        }
+    ]
+
+
+def test_forced_omission_is_derived_from_a_real_nonfirst_layer_route(tmp_path):
+    import gzip
+    import json
+
+    from flexmoe.analysis.decode_decision import derive_forced_omission
+
+    path = tmp_path / "trace.json.gz"
+    with gzip.open(path, "wt") as stream:
+        json.dump(
+            {
+                "artifact_kind": "decode-logical-cache-trace",
+                "rows": [
+                    {
+                        "step_id": 4,
+                        "layer_id": 0,
+                        "actual_expert_ids": [1, 2],
+                    },
+                    {
+                        "step_id": 4,
+                        "layer_id": 1,
+                        "actual_expert_ids": [3, 7],
+                    },
+                ],
+            },
+            stream,
+        )
+
+    assert derive_forced_omission(path) == "4:1:3"
+
+
+def test_oracle_output_gate_requires_all_three_horizons_and_forced_hash_match():
+    from flexmoe.analysis.decode_decision import oracle_output_gate
+
+    runs = {
+        label: {
+            "status": "complete",
+            "repetitions_completed": 3,
+            "repetitions": [{"output_sha256": "same"}] * 3,
+        }
+        for label in ("h0", "h1", "h2", "forced")
+    }
+    assert oracle_output_gate(runs)["status"] == "outputs-match"
+
+    runs["h2"] = {
+        **runs["h2"],
+        "repetitions": [{"output_sha256": "different"}] * 3,
+    }
+    assert oracle_output_gate(runs)["status"] == "output-mismatch"
+
+
 def test_controller_refuses_path_unsafe_run_id():
     from flexmoe.analysis.decode_decision import validate_run_id
 
@@ -304,6 +446,15 @@ def test_point_summary_keeps_scheduler_pressure_and_actual_batch_distribution():
     assert result["decode_batch_mean"] == pytest.approx(64 / 3)  # (16*20+32*10)/30
     assert result["preemptions_total"] == 6
     assert result["kv_usage_peak"] == 0.9
+    assert result["kv_admission_blocked"] == {
+        "status": "unavailable",
+        "reason": "waiting-request samples do not expose a direct KV allocation block reason",
+    }
+    assert result["swap_outs"] == {
+        "status": "policy-disabled",
+        "measured_count": None,
+    }
+    assert result["recomputed_tokens"]["status"] == "unavailable"
 
 
 def test_point_summary_keeps_phase_and_request_percentiles_per_repetition():
@@ -341,6 +492,25 @@ def test_point_summary_keeps_phase_and_request_percentiles_per_repetition():
     assert result["decode_wall_time_median_s"] == 3.0
     assert result["phase_per_repetition"][2]["max_rank_decode_step_ms_p95"] == 6.0
     assert result["request_metrics_per_repetition"][0]["ttft_s"]["p99"] == 3.0
+
+
+def test_fixed_actual_batch_gate_requires_all_ranks_and_repetitions_exactly_32():
+    from flexmoe.analysis.decode_decision import fixed_actual_batch_gate
+
+    run = summary(mode="offload")
+    for rep in run["repetitions"]:
+        rep["worker_observations"] = [
+            {"rank": rank, "decode_batch_step_counts": {"32": 256}} for rank in range(4)
+        ]
+    assert fixed_actual_batch_gate(run, target=32)["status"] == "measured"
+
+    run["repetitions"][1]["worker_observations"][3]["decode_batch_step_counts"] = {
+        "31": 1,
+        "32": 255,
+    }
+    rejected = fixed_actual_batch_gate(run, target=32)
+    assert rejected["status"] == "rejected"
+    assert rejected["reason"] == "decode-batch-distribution-differs"
 
 
 def test_replay_is_only_reported_when_all_four_ranks_three_reps_reproduce():
