@@ -122,6 +122,8 @@ class DecodeEngine(AnalysisEngine):
 
     def generate(self, prompts, sampling, **kwargs):
         outputs = super().generate(prompts, sampling, **kwargs)
+        for runner in self.runners:
+            runner.execute_model(batch=2, phase="prefill")
         # A capacity-limited scheduler produces batch 2 even with five submitted requests.
         for _ in range(3):
             for rank, runner in enumerate(self.runners):
@@ -178,6 +180,35 @@ def test_explicit_kv_only_new_adapter_and_native_profile_rejected(tmp_path):
         engine_arguments(cfg, 1050)
     with pytest.raises(ValueError, match="native.*profile"):
         module().DecodeMechanismBackend(cfg, mode="native", profile=True)
+
+
+def test_phase_evidence_uses_max_rank_wall_and_rejects_sequence_drift(tmp_path):
+    backend = module().DecodeMechanismBackend(config(tmp_path))
+    rows = [
+        {
+            "rank": rank,
+            "phase_timeline": {
+                "status": "measured",
+                "phase_sequence": ["prefill", "decode"],
+                "prefill_wall_time_s": float(rank + 1),
+                "decode_wall_time_s": float(rank + 2),
+                "decode_step_ms_p50": float(rank + 3),
+                "decode_step_ms_p95": float(rank + 4),
+                "decode_step_samples": 8,
+            },
+        }
+        for rank in range(4)
+    ]
+
+    result = backend.validate_phase(rows)
+    assert result["status"] == "measured"
+    assert result["max_rank_prefill_wall_time_s"] == 4.0
+    assert result["max_rank_decode_wall_time_s"] == 5.0
+    assert "sum" not in result
+
+    rows[3]["phase_timeline"]["phase_sequence"] = ["decode"]
+    with pytest.raises(ValueError, match="phase sequence"):
+        backend.validate_phase(rows)
 
 
 @pytest.mark.parametrize(
@@ -602,6 +633,8 @@ def test_shared_offload_runner_uses_real_registry_pool_and_heldout_profile(
             from test_partial_runner import Engine
 
             outputs = Engine.generate(self, prompts, sampling, **kwargs)
+            for runner in self.runners:
+                runner.execute_model(batch=2, phase="prefill")
             for _ in range(3):
                 ids = torch.tensor([[0, 1], [0, 2]], dtype=torch.int32)
                 for rank, runner in enumerate(self.runners):

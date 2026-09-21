@@ -115,6 +115,24 @@ def test_native_observes_without_histogram_allocation_and_restores_on_failure():
     assert result["coverage_status"] == "not-requested"
 
 
+def test_unprofiled_collector_records_and_restores_worker_phase_boundaries():
+    runner = PreparedRunner()
+    original_execute = runner.execute_model
+    capture = collector(runner, profile=False)
+
+    capture.start()
+    runner.execute_model(batch=2, phase="prefill")
+    runner.execute_model(batch=2, phase="decode")
+    result = capture.stop()
+
+    assert result["phase_timeline"]["status"] == "measured"
+    assert result["phase_timeline"]["phase_sequence"] == ["prefill", "decode"]
+    assert result["phase_timeline"]["decode_step_samples"] == 1
+    assert result["phase_timeline"]["prefill_wall_time_s"] >= 0
+    assert result["phase_timeline"]["decode_wall_time_s"] >= 0
+    assert runner.execute_model == original_execute
+
+
 def test_budget_includes_int32_histograms_and_ones_before_allocation():
     with pytest.raises(ValueError, match="budget"):
         collector(PreparedRunner(), profile=True, trace_budget_bytes=63).start()

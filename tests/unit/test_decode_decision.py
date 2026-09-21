@@ -306,6 +306,43 @@ def test_point_summary_keeps_scheduler_pressure_and_actual_batch_distribution():
     assert result["kv_usage_peak"] == 0.9
 
 
+def test_point_summary_keeps_phase_and_request_percentiles_per_repetition():
+    from flexmoe.analysis.decode_decision import point_metrics
+
+    run = summary(mode="native")
+    for repetition, rep in enumerate(run["repetitions"]):
+        rep["phase"] = {
+            "status": "measured",
+            "max_rank_prefill_wall_time_s": float(repetition + 1),
+            "max_rank_decode_wall_time_s": float(repetition + 2),
+            "max_rank_decode_step_ms_p50": float(repetition + 3),
+            "max_rank_decode_step_ms_p95": float(repetition + 4),
+        }
+        rep["request_metrics"] = {
+            "ttft_s": {"status": "measured", "p50": 1.0, "p95": 2.0, "p99": 3.0},
+            "request_latency_s": {
+                "status": "measured",
+                "p50": 4.0,
+                "p95": 5.0,
+                "p99": 6.0,
+            },
+            "derived_tpot_s": {
+                "status": "measured",
+                "p50": 0.1,
+                "p95": 0.2,
+                "p99": 0.3,
+            },
+            "itl_s": {"status": "unavailable", "reason": "per-token timestamps absent"},
+        }
+
+    result = point_metrics(run)
+
+    assert result["prefill_wall_time_median_s"] == 2.0
+    assert result["decode_wall_time_median_s"] == 3.0
+    assert result["phase_per_repetition"][2]["max_rank_decode_step_ms_p95"] == 6.0
+    assert result["request_metrics_per_repetition"][0]["ttft_s"]["p99"] == 3.0
+
+
 def test_replay_is_only_reported_when_all_four_ranks_three_reps_reproduce():
     from flexmoe.analysis.decode_decision import aggregate_replay
 

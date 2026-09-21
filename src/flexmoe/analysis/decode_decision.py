@@ -18,7 +18,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import median
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 MODEL = "/mnt/public_data/Qwen/Qwen3-Next-80B-A3B-Instruct"
@@ -340,7 +340,39 @@ def point_metrics(summary: dict[str, Any]) -> dict[str, Any]:
         "waiting_requests_peak": None,
         "misses_per_rank": None,
         "payload_bytes_per_rank": None,
+        "phase_status": "unavailable",
+        "phase_per_repetition": [],
+        "prefill_wall_time_median_s": None,
+        "decode_wall_time_median_s": None,
+        "request_metrics_per_repetition": [],
     }
+    phases = [rep.get("phase") for rep in reps]
+    phase_fields = (
+        "max_rank_prefill_wall_time_s",
+        "max_rank_decode_wall_time_s",
+        "max_rank_decode_step_ms_p50",
+        "max_rank_decode_step_ms_p95",
+    )
+    if len(phases) == len(reps) and all(
+        isinstance(row, dict)
+        and row.get("status") == "measured"
+        and all(type(row.get(field)) in (int, float) for field in phase_fields)
+        for row in phases
+    ):
+        measured_phases = cast(list[dict[str, Any]], phases)
+        values["phase_status"] = "measured"
+        values["phase_per_repetition"] = measured_phases
+        values["prefill_wall_time_median_s"] = median(
+            row["max_rank_prefill_wall_time_s"] for row in measured_phases
+        )
+        values["decode_wall_time_median_s"] = median(
+            row["max_rank_decode_wall_time_s"] for row in measured_phases
+        )
+    request_metrics = [rep.get("request_metrics") for rep in reps]
+    if len(request_metrics) == len(reps) and all(
+        isinstance(row, dict) for row in request_metrics
+    ):
+        values["request_metrics_per_repetition"] = request_metrics
     distributions = []
     for rep in reps:
         obs = rep.get("worker_observations", [])

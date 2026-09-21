@@ -393,6 +393,57 @@ class DecodeMechanismBackend(ExpertBackend):
             for row in shared.worker_rows(raw, self.config.tensor_parallel_size)
         ]
 
+    def validate_phase(self, rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+        ranked = shared.worker_rows(list(rows), self.config.tensor_parallel_size)
+        timelines = [row.get("phase_timeline") for row in ranked]
+        if any(not isinstance(row, Mapping) for row in timelines):
+            raise ValueError("per-rank phase timeline unavailable")
+        phases = cast(list[Mapping[str, Any]], timelines)
+        sequences = [row.get("phase_sequence") for row in phases]
+        if any(sequence != sequences[0] for sequence in sequences[1:]):
+            raise ValueError("per-rank phase sequence differs")
+        if sequences[0] != ["prefill", "decode"]:
+            raise ValueError("complete prefill/decode phase sequence unavailable")
+        samples = [row.get("decode_step_samples") for row in phases]
+        if (
+            any(row.get("status") != "measured" for row in phases)
+            or any(type(value) is not int or value <= 0 for value in samples)
+            or any(value != samples[0] for value in samples[1:])
+        ):
+            raise ValueError("per-rank phase boundary coverage differs")
+        names = (
+            "prefill_wall_time_s",
+            "decode_wall_time_s",
+            "decode_step_ms_p50",
+            "decode_step_ms_p95",
+        )
+        values: dict[str, list[float]] = {}
+        for name in names:
+            column = [row.get(name) for row in phases]
+            converted: list[float] = []
+            for value in column:
+                if not isinstance(value, (int, float)) or isinstance(value, bool):
+                    raise ValueError(f"per-rank {name} unavailable")
+                number = float(value)
+                if not math.isfinite(number) or number < 0:
+                    raise ValueError(f"per-rank {name} unavailable")
+                converted.append(number)
+            values[name] = converted
+        return {
+            "status": "measured",
+            "phase_sequence": sequences[0],
+            "decode_step_samples_per_rank": samples[0],
+            "max_rank_prefill_wall_time_s": max(values["prefill_wall_time_s"]),
+            "max_rank_decode_wall_time_s": max(values["decode_wall_time_s"]),
+            "max_rank_decode_step_ms_p50": max(values["decode_step_ms_p50"]),
+            "max_rank_decode_step_ms_p95": max(values["decode_step_ms_p95"]),
+            "per_rank": [
+                {"rank": row["rank"], **dict(phases[index])}
+                for index, row in enumerate(ranked)
+            ],
+            "scope": "maximum per-rank monotonic worker wall; rank times never summed",
+        }
+
     def _save_capture(
         self, raw: object, generation_status: str
     ) -> list[dict[str, Any]]:
@@ -429,6 +480,7 @@ class DecodeMechanismBackend(ExpertBackend):
             "memory": [],
             "memory_status": "unavailable",
             "memory_peak_scope": "measured-generate-after-synchronized-reset",
+            "phase": {"status": "unavailable"},
         }
         errors = []
         stage = "capture_stop"
@@ -440,6 +492,8 @@ class DecodeMechanismBackend(ExpertBackend):
             result["worker_observations"] = self._observations(raw)
             stage = "capture_save"
             self._save_capture(raw, "complete")
+            stage = "phase_validation"
+            result["phase"] = self.validate_phase(result["worker_observations"])
         except Exception as error:  # noqa: BLE001 -- reject after numeric sample persistence
             result["capture_status"] = "failed"
             errors.append({"stage": stage, "error_type": type(error).__name__})
@@ -499,6 +553,8 @@ class DecodeMechanismBackend(ExpertBackend):
             raise RuntimeError(
                 "decode observer finalization failed; completed generation retained"
             )
+        if result.get("phase", {}).get("status") != "measured":
+            raise RuntimeError("complete four-rank phase evidence unavailable")
         self._check_memory(result["memory"])
         actual = self.validate_kv(result["memory"])
         if actual != self.summary["actual_kv"]:

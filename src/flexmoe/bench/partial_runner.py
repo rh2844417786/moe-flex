@@ -208,6 +208,83 @@ def _number(value: object) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def _percentile(values: Sequence[float], fraction: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * fraction
+    low, high = math.floor(position), math.ceil(position)
+    return ordered[low] + (ordered[high] - ordered[low]) * (position - low)
+
+
+def _request_distribution(
+    values: list[float], *, unavailable_reason: str
+) -> dict[str, Any]:
+    if not values:
+        return {
+            "status": "unavailable",
+            "samples": 0,
+            "values": [],
+            "p50": None,
+            "p95": None,
+            "p99": None,
+            "reason": unavailable_reason,
+        }
+    return {
+        "status": "measured",
+        "samples": len(values),
+        "values": values,
+        "p50": _percentile(values, 0.50),
+        "p95": _percentile(values, 0.95),
+        "p99": _percentile(values, 0.99),
+        "reason": None,
+    }
+
+
+def summarize_request_metrics(
+    outputs: Sequence[Any], *, output_length: int
+) -> dict[str, Any]:
+    if type(output_length) is not int or output_length <= 0:
+        raise ValueError("output_length must be a positive integer")
+    ttfts: list[float] = []
+    latencies: list[float] = []
+    tpots: list[float] = []
+    for output in outputs:
+        metrics = getattr(output, "metrics", None)
+        arrival = _number(getattr(metrics, "arrival_time", None))
+        first = _number(getattr(metrics, "first_token_time", None))
+        finished = _number(getattr(metrics, "finished_time", None))
+        if arrival is not None and first is not None and first >= arrival:
+            ttfts.append(first - arrival)
+        if arrival is not None and finished is not None and finished >= arrival:
+            latencies.append(finished - arrival)
+        if (
+            output_length > 1
+            and first is not None
+            and finished is not None
+            and finished >= first
+        ):
+            tpots.append((finished - first) / (output_length - 1))
+    return {
+        "ttft_s": _request_distribution(
+            ttfts, unavailable_reason="arrival/first-token timestamps absent or invalid"
+        ),
+        "request_latency_s": _request_distribution(
+            latencies,
+            unavailable_reason="arrival/finished timestamps absent or invalid",
+        ),
+        "derived_tpot_s": _request_distribution(
+            tpots,
+            unavailable_reason="first-token/finished timestamps absent, invalid, or output length one",
+        ),
+        "itl_s": {
+            "status": "unavailable",
+            "reason": "per-token timestamps absent",
+        },
+        "tpot_scope": "derived per-request (finished-first)/(output_tokens-1); not measured token-level ITL",
+    }
+
+
 def summarize_outputs(
     outputs: Sequence[Any],
     *,
@@ -224,17 +301,9 @@ def summarize_outputs(
         )
     if elapsed_s <= 0 or not math.isfinite(elapsed_s):
         raise RuntimeError("elapsed time must be finite and positive")
-    ttfts: list[float] = []
-    latencies: list[float] = []
-    for output in outputs:
-        metrics = getattr(output, "metrics", None)
-        arrival = _number(getattr(metrics, "arrival_time", None))
-        first = _number(getattr(metrics, "first_token_time", None))
-        finished = _number(getattr(metrics, "finished_time", None))
-        if arrival is not None and first is not None and first >= arrival:
-            ttfts.append(first - arrival)
-        if arrival is not None and finished is not None and finished >= arrival:
-            latencies.append(finished - arrival)
+    request_metrics = summarize_request_metrics(outputs, output_length=output_length)
+    ttfts = request_metrics["ttft_s"]["values"]
+    latencies = request_metrics["request_latency_s"]["values"]
     generated = request_count * output_length
     return {
         "elapsed_s": elapsed_s,
@@ -246,6 +315,7 @@ def summarize_outputs(
         "ttft_available_requests": len(ttfts),
         "ttft_median_s": median(ttfts) if ttfts else None,
         "request_latency_median_s": median(latencies) if latencies else None,
+        "request_metrics": request_metrics,
     }
 
 

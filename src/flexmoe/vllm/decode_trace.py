@@ -14,6 +14,7 @@ from flexmoe.analysis.decode_counts import (
     validate_activation_row,
 )
 from flexmoe.vllm.analysis_trace import positive, step_metadata
+from flexmoe.vllm.decode_phase import PhaseTimeline
 
 
 class DecodeTraceCollector:
@@ -70,6 +71,8 @@ class DecodeTraceCollector:
         self.current: dict[str, Any] | None = None
         self.original: Any = None
         self.original_execute: Any = None
+        self.phase_timeline = PhaseTimeline()
+        self.phase_step: int | None = None
         self.step_events: list[tuple[int, Any, Any]] = []
         self.last: dict[str, Any] | None = None
         self.pool: Any = None
@@ -98,6 +101,7 @@ class DecodeTraceCollector:
                 (self.max_batch, self.top_k), dtype=torch.int64, device=self.device
             )
         self.original = self.runner._prepare_inputs
+        self.phase_timeline.start()
 
         def prepare(*args: Any, **kwargs: Any) -> Any:
             result = self.original(*args, **kwargs)
@@ -105,11 +109,12 @@ class DecodeTraceCollector:
             return result
 
         self.runner._prepare_inputs = prepare
-        if self.profile and self.device.type == "cuda":
-            self.original_execute = self.runner.execute_model
+        self.original_execute = self.runner.execute_model
 
-            def execute(*args: Any, **kwargs: Any) -> Any:
-                self.current = None
+        def execute(*args: Any, **kwargs: Any) -> Any:
+            self.current = None
+            self.phase_step = None
+            try:
                 result = self.original_execute(*args, **kwargs)
                 if (
                     self.current is not None
@@ -120,8 +125,12 @@ class DecodeTraceCollector:
                         (self.current["step"], self.current["start_event"], end)
                     )
                 return result
+            finally:
+                if self.phase_step is not None:
+                    self.phase_timeline.finish(step=self.phase_step)
+                    self.phase_step = None
 
-            self.runner.execute_model = execute
+        self.runner.execute_model = execute
         self.active = True
         return self.status()
 
@@ -151,6 +160,8 @@ class DecodeTraceCollector:
         if phase == "decode":
             self.batch_counts[str(batch)] += 1
         self.current = None
+        self.phase_timeline.record(step=step, phase=phase, actual_batch=batch)
+        self.phase_step = step
         if phase != "decode":
             self.skipped["non_decode"] += 1
         elif self.target is not None and batch != self.target:
@@ -223,8 +234,7 @@ class DecodeTraceCollector:
         if not self.active:
             return
         self.runner._prepare_inputs = self.original
-        if self.original_execute is not None:
-            self.runner.execute_model = self.original_execute
+        self.runner.execute_model = self.original_execute
         self.active = False
 
     def stop(self) -> dict[str, Any]:
@@ -322,6 +332,7 @@ class DecodeTraceCollector:
                 "model_step_span_scope": "CUDA-prepared-inputs-through-execute_model-return; instrumented",
                 "model_step_span_status": "measured" if spans else "unavailable",
                 "timing_eligible": not self.profile,
+                "phase_timeline": self.phase_timeline.stop(),
             }
             return self.last
         finally:
