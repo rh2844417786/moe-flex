@@ -188,6 +188,150 @@ def test_explicit_kv_only_new_adapter_and_native_profile_rejected(tmp_path):
         module().DecodeMechanismBackend(cfg, mode="native", profile=True)
 
 
+def test_oracle_flags_require_offload_trace_and_bounded_horizon(tmp_path):
+    cfg = replace(config(tmp_path), arm="partial-auto-kv")
+    trace = tmp_path / "oracle.json.gz"
+    profile = tmp_path / "profile.json"
+
+    backend = module().DecodeMechanismBackend(
+        cfg,
+        mode="offload",
+        profile_path=profile,
+        oracle_trace_path=trace,
+        prefetch_horizon=1,
+        force_omission="5:7:12",
+        target_batch=16,
+    )
+    fields = backend.contract_fields()
+    assert fields["oracle"] == {
+        "trace_path_sha256": module().sha256(str(trace.resolve()).encode()).hexdigest(),
+        "prefetch_horizon": 1,
+        "force_omission": [5, 7, 12],
+        "status": "configured-unvalidated",
+    }
+
+    with pytest.raises(ValueError, match="horizon"):
+        module().DecodeMechanismBackend(
+            cfg,
+            mode="offload",
+            profile_path=profile,
+            oracle_trace_path=trace,
+            prefetch_horizon=3,
+            target_batch=16,
+        )
+    with pytest.raises(ValueError, match="offload"):
+        module().DecodeMechanismBackend(
+            replace(cfg, arm="resident"),
+            mode="matched-resident",
+            oracle_trace_path=trace,
+            prefetch_horizon=1,
+            target_batch=16,
+        )
+    with pytest.raises(ValueError, match="trace"):
+        module().DecodeMechanismBackend(
+            cfg,
+            mode="offload",
+            profile_path=profile,
+            prefetch_horizon=1,
+            target_batch=16,
+        )
+
+
+def test_oracle_cli_passes_trace_horizon_and_forced_omission(tmp_path, monkeypatch):
+    got = []
+
+    def fake_run(cfg, **kwargs):
+        got.append(kwargs["backend"])
+
+    monkeypatch.setattr(module().shared, "run_benchmark", fake_run)
+    module().main(
+        [
+            "--mode",
+            "offload",
+            "--project-root",
+            str(tmp_path),
+            "--run-dir",
+            str(tmp_path / "run"),
+            "--profile-path",
+            "profile.json",
+            "--oracle-trace",
+            "oracle.json.gz",
+            "--prefetch-horizon",
+            "2",
+            "--target-batch",
+            "16",
+            "--force-omission",
+            "5:7:12",
+        ]
+    )
+
+    assert got[0].oracle_trace_path == tmp_path / "oracle.json.gz"
+    assert got[0].prefetch_horizon == 2
+    assert got[0].force_omission == (5, 7, 12)
+
+
+def test_oracle_trace_identity_is_validated_before_engine_construction(tmp_path):
+    cfg = replace(config(tmp_path), arm="partial-auto-kv")
+    trace_path = tmp_path / "oracle.json.gz"
+    backend = module().DecodeMechanismBackend(
+        cfg,
+        mode="offload",
+        profile_path=tmp_path / "profile.json",
+        oracle_trace_path=trace_path,
+        prefetch_horizon=1,
+        target_batch=16,
+    )
+    backend.geometry = {
+        "total_layers": 2,
+        "num_experts": 4,
+        "top_k": 2,
+        "expert_bytes": 24,
+    }
+    contract = {
+        "commit": "a" * 40,
+        "model_identity_sha256": "b" * 64,
+        "input_sha256": "c" * 64,
+        "seed": 20260912,
+        "context_length": 4096,
+        "output_length": 256,
+        "target_batch": 16,
+        "expert_cache": {"profile_sha256": "d" * 64},
+        "oracle": backend.contract_fields()["oracle"],
+    }
+    oracle_identity = backend.oracle_identity(contract)
+    rows = [
+        {
+            "step_id": step,
+            "layer_id": layer,
+            "actual_batch": 16,
+            "actual_expert_ids": [0, 1],
+        }
+        for step in range(64)
+        for layer in range(2)
+    ]
+    with gzip.open(trace_path, "wt") as stream:
+        json.dump(
+            {
+                "artifact_kind": "decode-logical-cache-trace",
+                "oracle_identity": oracle_identity,
+                "rows": rows,
+                "logical_sha256": "e" * 64,
+            },
+            stream,
+        )
+
+    backend.validate_pre_engine(contract, tmp_path)
+
+    assert backend.oracle_trace is not None
+    assert backend.oracle_trace.step_range == (0, 63)
+    assert contract["oracle"]["status"] == "validated"
+    assert contract["oracle"]["logical_sha256"] == "e" * 64
+
+    contract["input_sha256"] = "f" * 64
+    with pytest.raises(ValueError, match="identity"):
+        backend.validate_pre_engine(contract, tmp_path)
+
+
 def test_phase_evidence_uses_max_rank_wall_and_rejects_sequence_drift(tmp_path):
     backend = module().DecodeMechanismBackend(config(tmp_path))
     rows = [

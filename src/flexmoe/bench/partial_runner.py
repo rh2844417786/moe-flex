@@ -733,6 +733,9 @@ class BenchmarkBackend:
     def contract_fields(self) -> dict[str, Any]:
         return {}
 
+    def validate_pre_engine(self, contract: dict[str, Any], project_root: Path) -> None:
+        pass
+
     def workload(self, config: PartialRunConfig) -> PartialWorkload:
         return load_partial_workload(
             config.dataset_path,
@@ -878,6 +881,22 @@ def run_benchmark(
                 str(config.model_path.resolve()).encode()
             ).hexdigest(),
         }
+        pre_engine_contract = {
+            "commit": commit,
+            "model_identity_sha256": digest_json(model_identity),
+            "model_config_sha256": model_identity["config_sha256"],
+            **workload.metadata,
+            "batch_size": config.batch_size,
+            "context_length": config.context_length,
+            "output_length": config.output_length,
+            "tensor_parallel_size": config.tensor_parallel_size,
+            "gpu_memory_utilization": config.gpu_memory_utilization,
+            "seed": config.seed,
+            "max_num_seqs": config.max_num_seqs,
+            "max_num_batched_tokens": config.max_num_batched_tokens,
+            **backend.contract_fields(),
+        }
+        backend.validate_pre_engine(pre_engine_contract, project_root)
         backend.configure(config, project_root, plan.offload_layers)
         vllm = importlib.import_module("vllm")
         torch = importlib.import_module("torch")

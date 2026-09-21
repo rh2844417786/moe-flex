@@ -23,6 +23,7 @@ from flexmoe.bench.analysis_runner import (
 )
 from flexmoe.bench.expert_cache_runner import ExpertBackend, load_profile
 from flexmoe.datasets.decode_corpus import load_unique_workload
+from flexmoe.runtime.oracle_trace import OracleTrace
 from flexmoe.vllm.decode_trace import SchedulerObserver
 from flexmoe.vllm.expert_calibration import model_profile_identity
 
@@ -55,6 +56,9 @@ class DecodeMechanismBackend(ExpertBackend):
         kv_bytes: int | None = None,
         selection_offset: int = 0,
         safety_reserve_bytes: int = 2_000_000_000,
+        oracle_trace_path: Path | None = None,
+        prefetch_horizon: int | None = None,
+        force_omission: str | tuple[int, int, int] | None = None,
     ) -> None:
         if mode not in ("native", "matched-resident", "offload"):
             raise ValueError("unknown decode mechanism mode")
@@ -88,6 +92,39 @@ class DecodeMechanismBackend(ExpertBackend):
             raise ValueError(
                 "new decode runs require timing_samples=0; use --profile for detailed timing"
             )
+        oracle_configured = any(
+            value is not None
+            for value in (oracle_trace_path, prefetch_horizon, force_omission)
+        )
+        if oracle_configured and mode != "offload":
+            raise ValueError("oracle prefetch requires offload mode")
+        if (oracle_trace_path is None) != (prefetch_horizon is None):
+            raise ValueError(
+                "oracle trace and prefetch horizon must be provided together"
+            )
+        if prefetch_horizon is not None and (
+            type(prefetch_horizon) is not int or prefetch_horizon not in (0, 1, 2)
+        ):
+            raise ValueError("oracle prefetch horizon must be 0, 1, or 2")
+        if oracle_configured and target_batch not in (16, 32):
+            raise ValueError("oracle trace requires explicit target batch 16 or 32")
+        omission: tuple[int, int, int] | None = None
+        if force_omission is not None:
+            if prefetch_horizon not in (1, 2):
+                raise ValueError("forced omission requires prefetch horizon 1 or 2")
+            if isinstance(force_omission, str):
+                parts = force_omission.split(":")
+                if len(parts) != 3 or any(not part.isdigit() for part in parts):
+                    raise ValueError("force_omission must be STEP:LAYER:EXPERT")
+                omission = tuple(int(part) for part in parts)  # type: ignore[assignment]
+            elif (
+                isinstance(force_omission, tuple)
+                and len(force_omission) == 3
+                and all(type(value) is int and value >= 0 for value in force_omission)
+            ):
+                omission = force_omission
+            else:
+                raise ValueError("force_omission must be STEP:LAYER:EXPERT")
         super().__init__(
             config,
             profile_path or Path("."),
@@ -105,6 +142,11 @@ class DecodeMechanismBackend(ExpertBackend):
         )
         self.kv_bytes, self.selection_offset = kv_bytes, selection_offset
         self.safety_reserve_bytes = safety_reserve_bytes
+        self.oracle_trace_path = oracle_trace_path
+        self.prefetch_horizon = prefetch_horizon
+        self.force_omission = omission
+        self.oracle_trace: OracleTrace | None = None
+        self.oracle_validation: dict[str, Any] | None = None
         self.analysis = AnalysisBackend(
             mode="native" if mode == "native" else "eager",
             safety_reserve_bytes=safety_reserve_bytes,
@@ -204,7 +246,7 @@ class DecodeMechanismBackend(ExpertBackend):
         )
 
     def contract_fields(self) -> dict[str, Any]:
-        return {
+        fields = {
             **self._labels(),
             "expert_cache": self.settings,
             "target_batch": self.target_batch,
@@ -214,6 +256,72 @@ class DecodeMechanismBackend(ExpertBackend):
             "physical_safety_reserve_bytes": self.safety_reserve_bytes,
             "observation_policy": "prepared-inputs+forwarding-stats; profile-adds-eager-histograms-and-events",
         }
+        fields["oracle"] = (
+            {
+                "trace_path_sha256": sha256(
+                    str(self.oracle_trace_path.resolve()).encode()
+                ).hexdigest(),
+                "prefetch_horizon": self.prefetch_horizon,
+                "force_omission": list(self.force_omission)
+                if self.force_omission is not None
+                else None,
+                "status": "configured-unvalidated",
+                **(self.oracle_validation or {}),
+            }
+            if self.oracle_trace_path is not None
+            else {"status": "not-requested"}
+        )
+        return fields
+
+    def oracle_identity(self, contract: Mapping[str, Any]) -> dict[str, Any]:
+        profile = contract.get("expert_cache")
+        if not isinstance(profile, Mapping):
+            raise TypeError("oracle expert-cache contract is unavailable")
+        actual_batch = contract.get("target_batch")
+        if actual_batch not in (16, 32):
+            raise ValueError("oracle trace requires target batch 16 or 32")
+        identity = {
+            "commit": contract.get("commit"),
+            "model_identity_sha256": contract.get("model_identity_sha256"),
+            "profile_sha256": profile.get("profile_sha256"),
+            "input_sha256": contract.get("input_sha256"),
+            "geometry": {
+                key: self.geometry.get(key)
+                for key in ("total_layers", "num_experts", "top_k")
+            },
+            "seed": contract.get("seed"),
+            "context_length": contract.get("context_length"),
+            "output_length": contract.get("output_length"),
+            "actual_batch": actual_batch,
+        }
+        if any(
+            value is None for key, value in identity.items() if key != "geometry"
+        ) or any(value is None for value in identity["geometry"].values()):
+            raise ValueError("oracle trace identity is incomplete")
+        return identity
+
+    def validate_pre_engine(self, contract: dict[str, Any], project_root: Path) -> None:
+        if self.oracle_trace_path is None:
+            return
+        identity = self.oracle_identity(contract)
+        trace = OracleTrace.from_rank0_profile(
+            self.oracle_trace_path,
+            identity,
+            minimum_steps=max(64, self.min_capture_steps),
+        )
+        if self.force_omission is not None:
+            trace = trace.with_forced_omission(
+                step=self.force_omission[0],
+                layer=self.force_omission[1],
+                expert=self.force_omission[2],
+            )
+        self.oracle_trace = trace
+        self.oracle_validation = {
+            "status": "validated",
+            "logical_sha256": trace.logical_sha256,
+            "step_range": list(trace.step_range),
+        }
+        contract["oracle"].update(self.oracle_validation)
 
     def deltas(
         self, before: object, after: object, *, expected_workers: int
@@ -506,19 +614,24 @@ class DecodeMechanismBackend(ExpertBackend):
             shared.worker_rows(raw, self.config.tensor_parallel_size)
         )
         if logical["status"] == "measured":
+            artifact = {
+                **self._labels(),
+                "generation_status": generation_status,
+                "repetition": self.repetition,
+                "contract": self.summary["contract"],
+                "geometry": self.geometry,
+                **logical,
+            }
+            if self.target_batch in (16, 32):
+                artifact["oracle_identity"] = self.oracle_identity(
+                    self.summary["contract"]
+                )
             atomic_gzip(
                 self.run_dir
                 / f"decode-logical-trace-rep-{self.repetition:03d}.json.gz",
                 diagnostic_artifact(
                     "decode-logical-cache-trace",
-                    {
-                        **self._labels(),
-                        "generation_status": generation_status,
-                        "repetition": self.repetition,
-                        "contract": self.summary["contract"],
-                        "geometry": self.geometry,
-                        **logical,
-                    },
+                    artifact,
                 ),
             )
         for row in shared.worker_rows(raw, self.config.tensor_parallel_size):
@@ -756,6 +869,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=Path("benchmarks/data/decode-mechanism/dataset_manifest.json"),
     )
     parser.add_argument("--profile-path", type=Path)
+    parser.add_argument("--oracle-trace", dest="oracle_trace_path", type=Path)
+    parser.add_argument("--prefetch-horizon", type=int, choices=(0, 1, 2))
+    parser.add_argument("--force-omission")
     parser.add_argument(
         "--cache-policy", choices=("decayed-lfu", "lru"), default="decayed-lfu"
     )
@@ -786,7 +902,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     root, run = args.pop("project_root").resolve(), args.pop("run_dir").resolve()
     if not run.is_relative_to(root):
         parser.error("run-dir must remain inside project-root")
-    for key in ("dataset_path", "dataset_manifest", "profile_path"):
+    for key in (
+        "dataset_path",
+        "dataset_manifest",
+        "profile_path",
+        "oracle_trace_path",
+    ):
         if args.get(key) is not None and not args[key].is_absolute():
             args[key] = root / args[key]
     config_values = {
